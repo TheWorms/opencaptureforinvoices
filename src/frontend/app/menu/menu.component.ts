@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
-Open-Capture for Invoices is free software: you can redistribute it and/or modify
+Open-Capture is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
@@ -11,91 +11,124 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
 @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
 
-import { Component, Input, OnInit } from '@angular/core';
-import { Location } from "@angular/common";
-import { animate, state, style, transition, trigger } from "@angular/animations";
-import { UserService } from "../../services/user.service";
-import { LocaleService } from "../../services/locale.service";
-import { LocalStorageService } from "../../services/local-storage.service";
-import { PrivilegesService } from "../../services/privileges.service";
+import { environment } from "../env";
+import { tap } from "rxjs/operators";
 import { Router } from "@angular/router";
-import {TranslateService} from "@ngx-translate/core";
-declare const $: any;
+import { Location } from "@angular/common";
+import { HttpClient } from "@angular/common/http";
+import { _, TranslateService } from "@ngx-translate/core";
+import { UserService } from "../../services/user.service";
+import { AuthService } from "../../services/auth.service";
+import { LocaleService } from "../../services/locale.service";
+import { PrivilegesService } from "../../services/privileges.service";
+import { Component, HostListener, Input, OnInit } from '@angular/core';
+import { SessionStorageService } from "../../services/session-storage.service";
 
 @Component({
     selector: 'app-menu',
     templateUrl: './menu.component.html',
     styleUrls: ['./menu.component.scss'],
-    animations: [
-        trigger('toggle', [
-            state('hide', style({
-                display: 'none',
-
-            })),
-            state('show', style({
-                display: "block",
-            })),
-            transition('show => hide', animate('150ms ease-out')),
-            transition('hide => show', animate('100ms ease-in'))
-        ])
-    ]
+    standalone: false
 })
 
 export class MenuComponent implements OnInit {
-    @Input() image: any;
-    profileDropdownCurrentState : string = 'hide';
-    profileSettingsCurrentState : string = 'hide';
-    mobileMenuState             : string = 'hide';
+    @Input() image       : any;
+    @Input() imageMobile : any;
+    hideProfileDropdown  : boolean = true;
+    mobileMenuState      : boolean = false;
+    defaultModule        : string = '';
 
     constructor(
         public router: Router,
+        private http: HttpClient,
         public location: Location,
+        public authService: AuthService,
         public userService: UserService,
         public translate: TranslateService,
         public localeService: LocaleService,
         public privilegesService: PrivilegesService,
-        public localeStorageService: LocalStorageService
+        public sessionStorageService: SessionStorageService
     ) { }
 
     ngOnInit(): void {
-        this.userService.user = this.userService.getUserFromLocal();
+        setTimeout(() => {
+            this.userService.user = this.userService.getUserFromLocal();
+        }, 100);
+
         if (this.userService.user) {
             this.localeService.getLocales();
             this.localeService.getCurrentLocale();
         }
-        const k = [38, 38, 40, 40, 37, 39, 37, 39, 66, 65];
+
+        const k = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a'];
         let n = 0;
-        $(document).keydown((e: any) => {
-            if (e.keyCode === k[n++]) {
+        document.addEventListener('keydown', (e) => {
+            if (e.key === k[n++]) {
                 if (n === k.length) {
                     const audio = new Audio("assets/imgs/konami.mp3");
-                    $('#konami').fadeIn("slow").delay(3000).fadeOut();
-                    audio.play().then();
+                    const konami = document.getElementById('konami');
+                    konami!.style.display = "block";
+                    konami!.style.transition = "opacity .5s";
+                    konami!.style.opacity = "1";
+                    audio.volume = 0.3;
+                    audio.play().then(() => setTimeout(() => {
+                        konami!.style.transition = "opacity 1s";
+                        konami!.style.opacity = "0";
+                        setTimeout(() => {
+                            konami!.style.display = "none";
+                        }, 1000);
+                    }, 3000));
                     n = 0;
                 }
             }
-            else n = 0;
+            else {
+                n = 0;
+            }
         });
+
+        if (!this.defaultModule) {
+            this.http.get(environment['url'] + '/ws/config/getConfigurationNoAuth/defaultModule', {headers: this.authService.headers}).pipe(
+                tap((data: any) => {
+                    if (data.configuration.length === 1) {
+                        this.defaultModule = data.configuration[0].data.value;
+                    }
+                })
+            ).subscribe();
+        }
+    }
+
+    @HostListener('document:click', ['$event'])
+    onScreenClick(event: MouseEvent) {
+        const clickedElement = event.target as HTMLElement;
+        const userMenu = document.getElementById('user-menu');
+        if (userMenu && !userMenu.contains(clickedElement)) {
+            this.hideProfileDropdown = true;
+        }
+    }
+
+    goToUpload() {
+        if (this.defaultModule && !this.getSplitterOrVerifier()) {
+            this.sessionStorageService.save('splitter_or_verifier', this.defaultModule);
+        }
     }
 
     getSplitterOrVerifier() {
-        return this.localeStorageService.get('splitter_or_verifier');
+        return this.sessionStorageService.get('splitter_or_verifier');
     }
 
     toggleProfileDropdown() {
-        this.profileDropdownCurrentState = this.profileDropdownCurrentState === 'hide' ? 'show' : 'hide';
-        this.profileSettingsCurrentState = this.profileDropdownCurrentState === 'show' && this.profileSettingsCurrentState === 'show' ? 'hide' : this.profileSettingsCurrentState;
+        this.hideProfileDropdown = !this.hideProfileDropdown;
     }
 
-    closeprofileDropDown() {
-        this.profileDropdownCurrentState = 'hide';
+    closeProfileDropDown() {
+        this.hideProfileDropdown = false;
     }
 
     toggleMobileMenu() {
-        this.mobileMenuState = this.mobileMenuState === 'hide' ? 'show' : 'hide';
+        this.mobileMenuState = !this.mobileMenuState;
     }
 }

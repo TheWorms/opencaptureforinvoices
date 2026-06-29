@@ -1,74 +1,146 @@
-import {Injectable} from '@angular/core';
-import {LocalStorageService} from "./local-storage.service";
-import {HttpClient, HttpHeaders} from "@angular/common/http";
-import {Router} from "@angular/router";
-import {UserService} from "./user.service";
-import {SettingsService} from "./settings.service";
+/** This file is part of Open-Capture.
+
+ Open-Capture is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ Open-Capture is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+
+ @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
+
+import { of } from "rxjs";
+import { Router } from "@angular/router";
+import { environment } from "../app/env";
+import { Injectable } from "@angular/core";
+import { UserService } from "./user.service";
+import { catchError, tap } from "rxjs/operators";
+import { SessionStorageService } from "./session-storage.service";
+import { HttpClient, HttpHeaders } from "@angular/common/http";
 
 @Injectable({
     providedIn: 'root'
 })
 export class AuthService {
     public headers : HttpHeaders;
+    public headersExists : boolean = false;
 
     constructor(
         private router: Router,
         private http: HttpClient,
         private userService: UserService,
-        public serviceSettings: SettingsService,
-        private localStorage: LocalStorageService,
+        private sessionStorage: SessionStorageService
     ) {
-        this.headers = new HttpHeaders().set('Authorization', 'Bearer ' + this.getToken());
+        if (!this.getToken('tokenJwt')) {
+            this.headersExists = false;
+        }
+        this.headers = new HttpHeaders().set('Authorization', 'Bearer ' + this.getToken('tokenJwt'));
+    }
+
+    refreshToken() {
+        const refreshToken = this.getToken('refreshTokenJwt');
+        if (!refreshToken) {
+            return of(false);
+        }
+        const new_headers = new HttpHeaders().set('Authorization', 'Bearer ' + refreshToken);
+
+        return this.http
+            .post<any>(environment['url'] + '/ws/auth/login/refresh', {token: refreshToken}, {headers: new_headers})
+            .pipe(
+                tap((data: any) => {
+                    this.userService.setUser(data.user);
+                    this.setTokens(data.token, '', btoa(JSON.stringify(this.userService.getUser())));
+                    this.generateHeaders();
+                }),
+                catchError(() => {
+                    return of(false);
+                })
+            );
     }
 
     generateHeaders() {
-        this.headers = new HttpHeaders().set('Authorization', 'Bearer ' + this.getToken());
-    }
-
-    setCachedUrl(url: string) {
-        this.localStorage.save('OpenCaptureForInvoicesCachedUrl', url);
-    }
-
-    getCachedUrl() {
-        return this.localStorage.get('OpenCaptureForInvoicesCachedUrl');
+        if (this.getToken('tokenJwt')) {
+            this.headersExists = true;
+        }
+        this.headers = new HttpHeaders().set('Authorization', 'Bearer ' + this.getToken('tokenJwt'));
     }
 
     cleanCachedUrl() {
-        return this.localStorage.remove('OpenCaptureForInvoicesCachedUrl');
+        const tokenNames = this.getTokenName();
+        return this.sessionStorage.remove(tokenNames['cachedUrlName']);
     }
 
-    setTokenCustom(name: string, token: string) {
-        this.localStorage.save(name, token);
+    setToken(name: any, config: any) {
+        const tokenNames: any = this.getTokenName();
+        this.sessionStorage.save(tokenNames[name], config);
     }
 
-    getTokenCustom(name: string) {
-        return this.localStorage.get(name);
+    getTokenName() {
+        let tokenName = 'OpenCaptureToken';
+        let userDataName = 'OpenCaptureUserData';
+        let cachedUrlName = 'OpenCaptureCachedUrl';
+        let refreshTokenName = 'OpenCaptureRefreshToken';
+
+        if (environment['customId']) {
+            tokenName += '_' + environment['customId'];
+            userDataName += '_' + environment['customId'];
+            cachedUrlName += '_' + environment['customId'];
+            refreshTokenName += '_' + environment['customId'];
+        } else if (environment['fqdn']) {
+            tokenName += '_' + environment['fqdn'];
+            userDataName += '_' + environment['fqdn'];
+            cachedUrlName += '_' + environment['fqdn'];
+            refreshTokenName += '_' + environment['fqdn'];
+        }
+        return {
+            'tokenJwt': tokenName,
+            'userData': userDataName,
+            'cachedUrlName': cachedUrlName,
+            'refreshTokenJwt': refreshTokenName
+        };
     }
 
-    setTokens(token: string, token2: string, daysBeforeExp: number) {
-        this.localStorage.setCookie('OpenCaptureForInvoicesToken', token, daysBeforeExp);
-        this.localStorage.setCookie('OpenCaptureForInvoicesToken_2', token2, daysBeforeExp);
+    setTokens(token: string, refresh_token: string, user_token: string) {
+        const tokenNames = this.getTokenName();
+        this.sessionStorage.save(tokenNames['tokenJwt'], token);
+        this.sessionStorage.save(tokenNames['userData'], user_token);
+        this.sessionStorage.save(tokenNames['refreshTokenJwt'], refresh_token);
     }
 
-    setTokenAuth(token: string, daysBeforeExp: number) {
-        this.localStorage.setCookie('OpenCaptureForInvoicesToken_2', token, daysBeforeExp);
-    }
-
-    getToken() {
-        return this.localStorage.getCookie('OpenCaptureForInvoicesToken');
-    }
-
-    clearTokens() {
-        this.localStorage.deleteCookie('OpenCaptureForInvoicesToken');
-        this.localStorage.deleteCookie('OpenCaptureForInvoicesToken_2');
-        this.localStorage.remove('splitter_or_verifier');
+    getToken(name: any) {
+        const tokenNames: any = this.getTokenName();
+        return this.sessionStorage.get(tokenNames[name]);
     }
 
     logout() {
-        this.clearTokens();
+        const tokenNames = this.getTokenName();
+        const user = this.userService.getUser();
+
         this.userService.setUser({});
-        this.localStorage.remove('selectedSettings');
-        this.localStorage.remove('selectedParentSettings');
+        this.sessionStorage.remove('loginImageB64');
+        this.sessionStorage.remove('verifierOrder');
+        this.sessionStorage.remove('verifierFilter');
+        this.sessionStorage.remove('selectedSettings');
+        this.sessionStorage.remove(tokenNames['tokenJwt']);
+        this.sessionStorage.remove(tokenNames['userData']);
+        this.sessionStorage.remove('splitter_or_verifier');
+        this.sessionStorage.remove('selectedParentSettings');
+        this.sessionStorage.remove(tokenNames['refreshTokenJwt']);
+
+        if (user) {
+            this.http.get(environment['url'] + '/ws/auth/logout?user_id=' + user['id']).pipe(
+                catchError((err: any) => {
+                    console.debug(err);
+                    return of(false);
+                })
+            ).subscribe();
+        }
         this.router.navigateByUrl("/login").then();
     }
 }

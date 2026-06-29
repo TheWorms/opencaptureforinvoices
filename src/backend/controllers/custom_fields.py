@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,14 +11,14 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 # @dev : Oussama Brich <oussama.brich@edissyum.com>
 
-from src.backend.import_models import custom_fields
-from src.backend.import_controllers import forms
+from flask_babel import gettext
+from src.backend.controllers import forms
+from src.backend.models import custom_fields
 
 
 def add_custom_field(args):
@@ -29,10 +30,10 @@ def add_custom_field(args):
         return response, 200
     else:
         response = {
-            "errors": "CUSTOM_FIELDS_ERROR",
-            "message": error
+            "errors": gettext("CUSTOM_FIELDS_ERROR"),
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
 def retrieve_custom_fields(args):
@@ -45,10 +46,10 @@ def retrieve_custom_fields(args):
         return response, 200
 
     response = {
-        "errors": "CUSTOM_FIELDS_ERROR",
-        "message": error
+        "errors": gettext("CUSTOM_FIELDS_ERROR"),
+        "message": gettext(error)
     }
-    return response, 401
+    return response, 400
 
 
 def update(args):
@@ -58,20 +59,20 @@ def update(args):
         return '', 200
     else:
         response = {
-            "errors": "CUSTOM_FIELDS_ERROR",
-            "message": error
+            "errors": gettext("CUSTOM_FIELDS_ERROR"),
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
 def delete(args):
-    res, error = custom_fields.delete(args)
+    _, error = custom_fields.delete(args)
     if not error:
         forms.delete_custom_field_from_forms(args)
         return '', 200
     else:
         response = {
-            "errors": "CUSTOM_FIELDS_DELETE_ERROR",
-            "message": error
+            "errors": gettext("CUSTOM_FIELDS_DELETE_ERROR"),
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400

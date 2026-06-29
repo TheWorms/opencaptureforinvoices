@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,15 +11,16 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 # @dev : Oussama Brich <oussama.brich@edissyum.com>
 
 import json
 from flask import Blueprint, request, make_response, jsonify
-from src.backend.import_controllers import auth, custom_fields, forms
+from flask_babel import gettext
+
+from src.backend.controllers import auth, custom_fields, forms, privileges
 
 bp = Blueprint('customFields', __name__, url_prefix='/ws/')
 
@@ -26,35 +28,63 @@ bp = Blueprint('customFields', __name__, url_prefix='/ws/')
 @bp.route('customFields/list', methods=['GET'])
 @auth.token_required
 def retrieve_fields():
-    res = custom_fields.retrieve_custom_fields({})
+    if not privileges.has_privileges(request.environ['user_id'], ['custom_fields | custom_fields_advanced']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/customFields/list'}), 403
+
+    args = {
+        'where': ['enabled = %s', 'status <> %s'],
+        'data': [True, 'DEL'],
+    }
+    if 'module' in request.args:
+        args['where'].append('module = %s')
+        args['data'].append(request.args['module'])
+
+    if 'type' in request.args:
+        args['where'].append('type = %s')
+        args['data'].append(request.args['type'])
+
+    res = custom_fields.retrieve_custom_fields(args)
     return make_response(jsonify(res[0])), res[1]
 
 
 @bp.route('customFields/add', methods=['POST'])
 @auth.token_required
 def add_field():
-    data = json.loads(request.data)
-    res = custom_fields.add_custom_field(data)
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'custom_fields']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/customFields/add'}), 403
+
+    args = json.loads(request.data)
+    res = custom_fields.add_custom_field(args)
     return make_response(jsonify(res[0])), res[1]
 
 
-@bp.route('customFields/update', methods=['POST'])
+@bp.route('customFields/update', methods=['PUT'])
 @auth.token_required
 def update_custom_field():
-    data = json.loads(request.data)
-    res = custom_fields.update(data)
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'custom_fields']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/customFields/update'}), 403
+
+    args = json.loads(request.data)
+    res = custom_fields.update(args)
     return make_response(jsonify(res[0])), res[1]
 
 
-@bp.route('customFields/delete/<int:custom_field_id>', methods=['DELETE'])
+@bp.route('customFields/delete/<int:custom_id>', methods=['DELETE'])
 @auth.token_required
-def delete_custom_field(custom_field_id):
-    res = custom_fields.delete({'custom_field_id': custom_field_id})
+def delete_custom_field(custom_id):
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'custom_fields']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': f'/customFields/delete/{custom_id}'}), 403
+
+    res = custom_fields.delete({'custom_field_id': custom_id})
     return make_response(jsonify(res[0])), res[1]
 
 
 @bp.route('customFields/customPresentsInForm/<int:custom_id>', methods=['GET'])
 @auth.token_required
 def custom_presents_in_form(custom_id):
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'custom_fields']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'),
+                        'message': f'/customFields/customPresentsInForm/{custom_id}'}), 403
+
     res = forms.custom_present_in_form({'custom_id': custom_id})
     return make_response(jsonify(res[0])), res[1]

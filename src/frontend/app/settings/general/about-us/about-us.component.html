@@ -1,149 +1,114 @@
-<mat-sidenav-container class="absolute left-0 right-0 bottom-0" style="top: 4.1rem">
-    <mat-sidenav #sidenav mode="side" opened class="w-1/6 flex flex-col h-full border-r border-green-400" style="top:0.1rem">
-        <h3 class="bg-green-400 bg-opacity-60 text-center text-gray-900 m-0 pb-4" style="padding-top: 0.9rem">{{ "SETTINGS.administration" | translate }}</h3>
-        <mat-divider class="border-green-400"></mat-divider>
-        <mat-nav-list class="pt-0">
-            <mat-expansion-panel *ngFor="let parent of this.serviceSettings.getSettingsParent()"
-                                 [expanded]="parent.opened" (opened)="this.serviceSettings.closeOtherParent(this.router.url, parent['id'])">
-                <mat-expansion-panel-header class="settings_expansion">
-                    <mat-panel-title>
-                        {{ parent['label'] | translate }}
-                    </mat-panel-title>
-                </mat-expansion-panel-header>
-                <div class="w-full border-t-2 border-gray-600">
-                    <div *ngFor="let setting of this.serviceSettings.getSettings()[parent['id']];"
-                         [class.border-b]="this.privilegesService.hasPrivilege(setting['privilege']) || setting['privilege'] === '*'"
-                         [class.border-gray-400]="this.privilegesService.hasPrivilege(setting['privilege']) || setting['privilege'] === '*'">
-                        <div *ngIf="this.serviceSettings.getSettingsAction(parent['id'], setting['id']) else noActions">
-                            <mat-expansion-panel *ngIf="this.privilegesService.hasPrivilege(setting['privilege']) || setting['privilege'] === '*'"
-                                                 [expanded]="this.router.url.includes(setting['route'])">
-                                <mat-expansion-panel-header class="font-normal w-full h-20">
-                                    <mat-panel-title class="font-normal justify-center items-center text-center">
-                                        <i [class.text-green-400]="this.router.url === setting['route']"
-                                           class="absolute text-lg left-4 w-10 h-10 rounded-full flex items-center justify-center {{setting['icon']}}">
-                                        </i>
-                                        <button mat-button [class.text-green-400]="this.router.url === setting['route']"
-                                                class="pr-0 font-normal w-full h-20 flex justify-center items-center text-center"
-                                                (click)="this.serviceSettings.changeSetting(setting['id'], parent['id'])"
-                                                routerLink="{{ setting['route'] }}">
-                                            <p [class.font-medium]="this.router.url === setting['route']" class="m-0">
-                                                {{ setting['label'] | translate }}
-                                            </p>
-                                        </button>
-                                    </mat-panel-title>
-                                </mat-expansion-panel-header>
-                                <div *ngFor="let action of this.serviceSettings.getSettingsAction(parent['id'], setting['id'])"
-                                     [class.border-gray-600]="!action['showOnlyIfActive']"
-                                     [class.border-t]="!action['showOnlyIfActive']"
-                                     [class.w-full]="!action['showOnlyIfActive']">
-                                    <div class="border-b border-gray-400"
-                                         *ngIf="(this.privilegesService.hasPrivilege(action['privilege']) || setting['privilege'] === '*') && (!action['showOnlyIfActive'] || (action['showOnlyIfActive'] && this.router.url.includes(action['route'])))">
-                                        <button mat-button
-                                                [class.text-green-400]="this.router.url.includes(action['route'])"
-                                                class="font-normal w-full h-12 ml-12 flex items-center text-center"
-                                                (click)="this.serviceSettings.changeSetting(setting['id'], parent['id'])"
-                                                routerLink="{{ action['route'] }}"
-                                                [class.disable_link]="action['showOnlyIfActive']">
-                                            <i class="absolute text-lg w-10 h-10 rounded-full flex items-center justify-center {{action['icon']}}"></i>
-                                            <p class="m-0 ml-12" style="margin-top: 2.5px!important">
-                                                {{ action['label'] | translate }}
-                                            </p>
-                                        </button>
-                                    </div>
-                                </div>
-                            </mat-expansion-panel>
-                        </div>
-                        <ng-template #noActions>
-                            <button *ngIf="this.privilegesService.hasPrivilege(setting['privilege']) || setting['privilege'] === '*'"
-                                    mat-button [class.text-green-400]="this.router.url === setting['route']"
-                                    class="pr-0 font-normal w-full h-20 flex justify-center items-center text-center"
-                                    (click)="this.serviceSettings.changeSetting(setting['id'], parent['id'])"
-                                    routerLink="{{ setting['route'] }}">
-                                <i class="absolute left-4 w-10 h-10 rounded-full flex items-center justify-center fa-lg {{setting['icon']}}"></i>
-                                <p [class.font-medium]="this.router.url === setting['route']" class="m-0">
-                                    {{ setting['label'] | translate }}
-                                </p>
-                            </button>
-                        </ng-template>
+<mat-sidenav-container class="absolute left-0 right-0 bottom-0" style="top: 4.1rem" [autosize]="true">
+    <mat-sidenav #sidenav mode="side" [opened]="true" class="settings-menu-nav" [class.w-20]="this.serviceSettings.minimizeSideNav">
+        <app-settings-menu [minimizeSideNav]="this.serviceSettings.minimizeSideNav"></app-settings-menu>
+    </mat-sidenav>
+    <mat-sidenav-content class="bg-white overflow-hidden">
+        @if (this.loading) {
+            <div>
+                <app-loader></app-loader>
+            </div>
+        }
+        <div class="settings_header">
+            <div class="flex">
+                <button mat-icon-button (click)="this.serviceSettings.minimizeSideNav = !this.serviceSettings.minimizeSideNav;">
+                    <i [class.transform]="!sidenav.opened" [class.rotate-180]="!sidenav.opened" class="fa-solid fa-stream text-2xl text-gray-900"></i>
+                </button>
+            </div>
+            <h3 class="text-center m-0">
+                Open-Capture
+                @if (!this.loading) {
+                    <strong> version <span id="gitVersion">{{ this.currentVersion }}</span></strong>&nbsp;
+                }
+                @if (this.lastVersion === 'error') {
+                    |<span class="text-red-600">&nbsp;{{ 'ERROR.git_connection' | translate }}</span>
+                }
+                @if (!this.loading && this.lastVersion > this.currentVersion && this.isProd) {
+                    | {{ 'ABOUT-US.new_version_available' | translate }} (<strong>
+                        <a [href]="'https://github.com/edissyum/opencapture/releases/tag/' + this.lastVersion"
+                           target="_blank">{{ this.lastVersion }}</a>
+                    </strong>)
+                }
+                @if (!this.loading && this.lastVersion < this.currentVersion && this.isProd) {
+                    | {{ 'ABOUT-US.are_you_in_future' | translate }} ({{ 'ABOUT-US.last_official_version' | translate }}&nbsp;:
+                    <strong>
+                        <a [href]="'https://github.com/edissyum/opencapture/releases/tag/' + this.lastVersion"
+                            target="_blank">{{ this.lastVersion }}</a>
+                    </strong>)
+                }
+            </h3>
+            <div class="settings_search"></div>
+        </div>
+        <hr class="border-green-400 relative z-30">
+        <div class="overflow-x-hidden overflow-y-auto h-full-overflow">
+            <div id="license" class="text-center mt-10">
+                <h2>{{ 'ABOUT-US.license' | translate }}</h2>
+                {{ 'ABOUT-US.distributed_under' | translate }}
+                <a class="text-green-400" target="_blank" href="https://www.gnu.org/licenses/gpl-3.0.html">
+                    {{ 'ABOUT-US.gnu_license' | translate }}
+                </a>
+            </div>
+            <hr class="m-auto mt-10 w-1/2 border-green-400 border-opacity-60">
+            <div class="edissyum text-center mt-10 text-lg" style="line-height: 35px !important;">
+                <h2>{{ 'ABOUT-US.editor' | translate }}</h2>
+                <div class="grid grid-cols-2 gap-10 w-1/2 m-auto">
+                    <div class="text-right">
+                        Edissyum Consulting <br>
+                        98 Avenue Pierre Semard <br>
+                        84200 Carpentras
+                    </div>
+                    <div class="text-left" style="width: 200%">
+                        {{ 'ABOUT-US.official_website' | translate }} : <a class="text-green-400" rel="noopener" href="https://kutt.it/OpenCaptureWebSite" target="_blank">open-capture.com</a><br>
+                        Documentation : <a class="text-green-400" rel="noopener" href="https://kutt.it/DocumentationV2" target="_blank">edissyum.gitbook.io/open-capture/</a> <br>
+                        Support : <a class="text-green-400" rel="noopener" href="https://kutt.it/OCForInvoices_ISSUES" target="_blank">github.com/edissyum/opencapture</a>
                     </div>
                 </div>
-            </mat-expansion-panel>
-        </mat-nav-list>
-    </mat-sidenav>
-    <mat-sidenav-content class="bg-white">
-        <div *ngIf="loading">
-            <app-loader></app-loader>
-        </div>
-        <div class="settings_header">
-            <button mat-icon-button (click)="sidenav.toggle(); this.serviceSettings.toggleMenu();"
-                    class="absolute left-2 top-2">
-                <i [class.fa-arrow-right]="!this.serviceSettings.getIsMenuOpen()" class="fas fa-arrow-left text-2xl text-gray-900"></i>
-            </button>
-            <div class="settings_title text-center">
-                <h3>
-                    Open-Capture for Invoices <span *ngIf="!loading"><b>version {{ gitVersion }}</b></span>
-                    <span *ngIf="!loading && lastVersion !== gitVersion && isProd">
-                        | {{ 'ABOUT-US.new_version_available' | translate }} (<b>
-                                <a  [href]="'https://github.com/edissyum/opencaptureforinvoices/releases/tag/' + lastVersion"
-                                    target="_blank">{{lastVersion}}</a>
-                            </b>)
-                    </span>
-                </h3>
-                <hr class="border-green-400">
             </div>
-        </div>
-        <div id="license" class="text-center mt-10">
-            <h2>{{ 'ABOUT-US.license' | translate }}</h2>
-            {{ 'ABOUT-US.distributed_under' | translate }}&nbsp;
-            <a class="text-green-400" href="https://www.gnu.org/licenses/gpl-3.0.html">
-                {{ 'ABOUT-US.gnu_license' | translate }}
-            </a>
-        </div>
-        <hr class="m-auto mt-10 w-1/2 border-green-400 border-opacity-60">
-        <div class="edissyum text-center mt-10 text-lg" style="line-height: 35px !important;">
-            <h2>{{ 'ABOUT-US.editor' | translate }}</h2>
-            <div class="grid grid-cols-2 gap-10 w-1/2 m-auto">
-                <div class="text-right">
-                    Edissyum Consulting <br>
-                    98 Avenue Pierre Semard <br>
-                    84200 Carpentras
-                </div>
-                <div class="text-left" style="width: 200%">
-                    {{ 'ABOUT-US.official_website' | translate }} : <a class="text-green-400" href="https://kutt.it/OpenCaptureWebSite">open-capture.com</a><br>
-                    Documentation : <a class="text-green-400" href="https://kutt.it/DocumentationV2">edissyum.gitbook.io/open-capture-for-invoices-v2</a> <br>
-                    Support : <a class="text-green-400" href="https://kutt.it/OCForInvoices_ISSUES">github.com/edissyum/opencaptureforinvoices</a>
+            <hr class="m-auto mt-10 w-1/2 border-green-400 border-opacity-60">
+            <div class="flex justify-center items-center mt-10 mb-5">
+                <div>
+                    <img src="assets/imgs/login_image.png" alt="Open-Capture">
+                    <hr class="m-auto mt-10 w-1/2 border-green-400">
+                    <h3 class="mt-6 text-center">{{ 'ABOUT-US.lead_dev' | translate }} : CHEVAL Nathan</h3>
                 </div>
             </div>
-        </div>
-        <hr class="m-auto mt-10 w-1/2 border-green-400 border-opacity-60">
-        <div class="logo flex justify-center items-center gap-48 mt-10">
-            <div id="verifier">
-                <img src="assets/imgs/logo_verifier.png" alt="Open-Capture Verifier">
-                <hr class="m-auto mt-10 w-1/2 border-green-400">
-                <h3 class="mt-6">{{ 'ABOUT-US.lead_dev' | translate }} : CHEVAL Nathan</h3>
+            <div class="logo grid grid-cols-7">
+                <div id="verifier" class="m-auto col-start-2 col-span-2">
+                    <img src="assets/imgs/logo_verifier.png" alt="Open-Capture Verifier">
+                    <hr class="m-auto mt-10 w-1/2 border-green-400">
+                    <h3 class="mt-6 text-center">{{ 'ABOUT-US.lead_dev' | translate }} : CHEVAL Nathan</h3>
+                </div>
+                <div id="splitter" class="m-auto col-start-5 col-span-2">
+                    <img src="assets/imgs/logo_splitter.png" alt="Open-Capture Splitter">
+                    <hr class="m-auto mt-10 w-1/2 border-green-400">
+                    <h3 class="mt-6 text-center">{{ 'ABOUT-US.lead_dev' | translate }} : BRICH Oussama</h3>
+                </div>
             </div>
-            <div id="splitter">
-                <img src="assets/imgs/logo_splitter.png" alt="Open-Capture Splitter">
-                <hr class="m-auto mt-10 w-1/2 border-green-400">
-                <h3 class="mt-6">{{ 'ABOUT-US.lead_dev' | translate }} : BRICH Oussama</h3>
-            </div>
-        </div>
-        <hr class="m-auto mt-10 w-1/2 border-green-400 border-opacity-60">
-        <div id="dependency" class="text-center mt-10 mb-10">
-            <h2>{{ 'ABOUT-US.dependency' | translate }}</h2>
-            <h4><i>{{ 'ABOUT-US.thanks_to_developers' | translate }}</i></h4>
-            <div>
-                <ul>
-                    <li><a class="text-green-400" href="https://angular.io/">Angular</a></li>
-                    <li><a class="text-green-400" href="https://material.angular.io/">Angular Material</a></li>
-                    <li><a class="text-green-400" href="https://jquery.com/download/">jQuery</a></li>
-                    <li><a class="text-green-400" href="https://github.com/kreuzerk/ng-sortgrid">NgsgModule</a></li>
-                    <li><a class="text-green-400" href="https://github.com/bleenco/ng2-datepicker">DatePickerModule</a></li>
-                    <li><a class="text-green-400" href="https://github.com/telebroad/ngx-file-drag-drop">NgxFileDragDropModule</a></li>
-                    <li><a class="text-green-400" href="https://github.com/ngx-translate/core">NgxTranslateModule</a></li>
-                    <li><a class="text-green-400" href="https://tailwindcss.com/">Tailwind CSS</a></li>
-                    <li><a class="text-green-400" href="https://fontawesome.com/">FontAwesome</a></li>
-                </ul>
+            <hr class="m-auto mt-10 w-1/2 border-green-400 border-opacity-60">
+            <div id="dependency" class="text-center mt-10 mb-10">
+                <h2>{{ 'ABOUT-US.dependency' | translate }}</h2>
+                <h4><i>{{ 'ABOUT-US.thanks_to_developers' | translate }}</i></h4>
+                <div>
+                    <ul>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/jquery/jquery">jquery</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/moment/moment">moment</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/tinymce/tinymce-angular">&#64;tinymce</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/scttcper/ngx-toastr">ngx-toastr</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/tailwindlabs/tailwindcss">tailwindcss</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/kreuzerk/ng-sortgrid">ng-sortgrid</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/ngx-translate/">ngx-translate</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/microsoft/monaco-editor">monaco-editor</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/tyxla/remove-accents">remove-accents</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/hjnilsson/country-flags">svg-country-flags</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/angular/components">&#64;angular/material</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/telebroad/ngx-file-drag-drop">ngx-file-drag-drop</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/aamirvohra/ngx-translate-extract">ngx-translate-extract</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/bithost-gmbh/ngx-mat-select-search">ngx-mat-select-search</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/ngstack/code-editor">&#64;ngstack/code-editor</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/swimlane/ngx-charts">&#64;swimlane/ngx-charts</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/FortAwesome/Font-Awesome">&#64;fortawesome/fontawesome-free</a></li>
+                        <li><a class="text-green-400" target="_blank" rel="noopener" href="https://github.com/angular-material-extensions/select-country">&#64;angular-material-extensions/select-country</a></li>
+                    </ul>
+                </div>
             </div>
         </div>
     </mat-sidenav-content>

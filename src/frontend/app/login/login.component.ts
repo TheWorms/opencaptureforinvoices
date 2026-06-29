@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
-Open-Capture for Invoices is free software: you can redistribute it and/or modify
+Open-Capture is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
@@ -11,45 +11,53 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
 @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
 
-import {Component, OnInit} from '@angular/core';
-import {Validators, FormBuilder} from '@angular/forms';
-import {TranslateService} from "@ngx-translate/core";
-import {API_URL} from "../env";
-import {HttpClient} from "@angular/common/http";
-import {NotificationService} from "../../services/notifications/notifications.service";
-import {catchError, tap} from "rxjs/operators";
-import {of} from "rxjs";
-import {AuthService} from "../../services/auth.service";
-import {Router} from "@angular/router";
-import {ConfigService} from "../../services/config.service";
-import {LocaleService} from "../../services/locale.service";
-import {UserService} from "../../services/user.service";
-import {HistoryService} from "../../services/history.service";
+import { of } from "rxjs";
+import { environment } from "../env";
+import { Router } from "@angular/router";
+import { HttpClient } from "@angular/common/http";
+import { _, TranslateService } from "@ngx-translate/core";
+import { Validators, FormBuilder } from '@angular/forms';
+import { AuthService } from "../../services/auth.service";
+import { UserService } from "../../services/user.service";
+import { catchError, finalize, tap } from "rxjs/operators";
+import { LocaleService } from "../../services/locale.service";
+import { Component, OnInit, SecurityContext } from '@angular/core';
+import { DomSanitizer, SafeHtml } from "@angular/platform-browser";
+import { SessionStorageService } from "../../services/session-storage.service";
+import { NotificationService } from "../../services/notifications/notifications.service";
 
 @Component({
     selector: 'app-login',
     templateUrl: './login.component.html',
-    styleUrls: ['./login.component.scss']
+    standalone: false
 })
 export class LoginComponent implements OnInit {
-    loginForm   : any;
-    processLogin: boolean = false;
+    loginForm               : any;
+    enableLoginMethodName   : any;
+    loginImage              : any       = '';
+    loginTopMessage         : SafeHtml  = '';
+    loginBottomMessage      : SafeHtml  = '';
+    loading                 : boolean   = true;
+    isConnectionBtnDisabled : boolean   = true;
+    processLogin            : boolean   = false;
+    showPassword            : boolean   = false;
+    defaultRoute            : string    = '/home';
 
     constructor(
         private router: Router,
         private http: HttpClient,
+        private sanitizer: DomSanitizer,
         private formBuilder: FormBuilder,
         private authService: AuthService,
         private userService: UserService,
         private translate: TranslateService,
         private notify: NotificationService,
-        private configService: ConfigService,
         private localeService: LocaleService,
-        private historyService: HistoryService,
+        private sessionStorageService: SessionStorageService
     ) {}
 
     ngOnInit(): void {
@@ -57,9 +65,81 @@ export class LoginComponent implements OnInit {
             username: [null, Validators.required],
             password: [null, Validators.required]
         });
-        if (this.localeService.currentLang === undefined) {
+
+        if (!this.localeService.currentLang) {
             this.localeService.getCurrentLocale();
         }
+        const b64Content = this.sessionStorageService.get('loginImageB64');
+        if (!b64Content) {
+            this.http.get(environment['url'] + '/ws/config/getLoginImage').pipe(
+                tap((data: any) => {
+                    this.sessionStorageService.save('loginImageB64', data);
+                    this.loginImage = this.sanitizer.sanitize(SecurityContext.URL, 'data:image/png;base64, ' + data);
+                }),
+                catchError((err: any) => {
+                    console.debug(err);
+                    this.notify.handleErrors(err);
+                    return of(false);
+                })
+            ).subscribe();
+        } else {
+            this.loginImage = this.sanitizer.sanitize(SecurityContext.URL, 'data:image/png;base64, ' + b64Content);
+        }
+
+        this.http.get(environment['url'] + '/ws/config/getConfigurationNoAuth/loginTopMessage').pipe(
+            tap((data: any) => {
+                if (data.configuration.length === 1) {
+                    let value = data.configuration[0].data.value.replace(/&gt;/gi, '>');
+                    value = value.replace(/&gt;/gi, '>');
+                    value = value.replace(/&lt;/gi, '<');
+                    value = value.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+                    this.loginTopMessage = this.sanitizer.bypassSecurityTrustHtml(value);
+                }
+            }),
+            finalize(() => this.loading = false),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+
+        this.http.get(environment['url'] + '/ws/config/getConfigurationNoAuth/loginBottomMessage').pipe(
+            tap((data: any) => {
+                if (data.configuration.length === 1) {
+                    let value = data.configuration[0].data.value.replace(/&gt;/gi, '>');
+                    value = value.replace(/&gt;/gi, '>');
+                    value = value.replace(/&lt;/gi, '<');
+                    value = value.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+                    this.loginBottomMessage = this.sanitizer.bypassSecurityTrustHtml(value);
+                }
+            }),
+            finalize(() => this.loading = false),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+
+        this.http.get(environment['url'] + '/ws/auth/getEnabledLoginMethod', {headers: this.authService.headers}).pipe(
+            tap((data: any) => {
+                if (data['login_method_name'][0]) {
+                    const login_method_name = data['login_method_name'][0];
+                    this.enableLoginMethodName = login_method_name['method_name'];
+                } else {
+                    this.notify.error(this.translate.instant('LOGIN-METHODS.no_default_login_methods'));
+                    this.enableLoginMethodName = 'default';
+                }
+                this.isConnectionBtnDisabled = false;
+            }),
+            catchError((err: any) => {
+                this.isConnectionBtnDisabled = true;
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
     }
 
     onSubmit() {
@@ -68,30 +148,49 @@ export class LoginComponent implements OnInit {
         if (password && username) {
             this.processLogin = true;
             this.http.post(
-                API_URL + '/ws/auth/login',
+                environment['url'] + '/ws/auth/login',
                 {
                     'username': username,
                     'password': password,
-                    'lang': this.localeService.currentLang
+                    'lang': this.localeService.currentBabelLang
                 },
                 {
                     observe: 'response'
                 },
             ).pipe(
                 tap((data: any) => {
+                    const passwordAlert = data.body['admin_password_alert'];
                     this.userService.setUser(data.body.user);
-                    this.authService.setTokens(data.body.auth_token, btoa(JSON.stringify(this.userService.getUser())), data.body.days_before_exp);
+                    this.authService.setTokens(data.body['auth_token'], data.body['refresh_token'], btoa(JSON.stringify(this.userService.getUser())));
                     this.authService.generateHeaders();
                     this.notify.success(this.translate.instant('AUTH.authenticated'));
-                    this.configService.readConfig().then(() => {
-                        this.historyService.addHistory('general', 'login', this.translate.instant('HISTORY-DESC.login'));
-                        if (this.authService.getCachedUrl()) {
-                            this.router.navigate([this.authService.getCachedUrl()]).then();
-                            this.authService.cleanCachedUrl();
-                        } else {
-                            this.router.navigate(['/home']).then();
-                        }
-                    });
+                    if (this.authService.getToken('cachedUrlName')) {
+                        this.router.navigate([this.authService.getToken('cachedUrlName')]).then(() => {
+                            if (passwordAlert) {
+                                this.notify.error(this.translate.instant('ERROR.admin_password_alert'));
+                            }
+                        });
+                        this.authService.cleanCachedUrl();
+                    } else {
+                        this.http.get(environment['url'] + '/ws/users/getDefaultRoute/' + this.userService.user.id, {headers: this.authService.headers}).pipe(
+                            tap((data: any) => {
+                                if (data.route) {
+                                    this.defaultRoute = data.route;
+                                }
+                                this.router.navigate([this.defaultRoute]).then(() => {
+                                    if (passwordAlert) {
+                                        this.notify.error(this.translate.instant('ERROR.admin_password_alert'));
+                                    }
+                                });
+                            }),
+                            catchError((err: any) => {
+                                console.debug(err);
+                                this.notify.handleErrors(err);
+                                return of(false);
+                            })
+                        ).subscribe();
+
+                    }
                 }),
                 catchError((err: any) => {
                     this.processLogin = false;
@@ -104,8 +203,11 @@ export class LoginComponent implements OnInit {
     }
 
     getErrorMessage(field: any) {
-        if (this.loginForm.get(field).hasError('required'))
+        if (this.loginForm.get(field).hasError('required')) {
             return this.translate.instant('AUTH.field_required');
+        }
         return this.translate.instant('ERROR.unknow_error');
     }
+
+    protected readonly environment = environment;
 }

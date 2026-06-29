@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
- Open-Capture for Invoices is free software: you can redistribute it and/or modify
+ Open-Capture is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
  the Free Software Foundation, either version 3 of the License, or
  (at your option) any later version.
@@ -11,19 +11,19 @@
  GNU General Public License for more details.
 
  You should have received a copy of the GNU General Public License
- along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+ along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
  @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
 
-import {MatPaginatorIntl} from "@angular/material/paginator";
-import {Injectable} from '@angular/core';
-import {TranslateService} from "@ngx-translate/core";
-import {API_URL} from "./env";
-import {catchError, tap} from "rxjs/operators";
-import {of} from "rxjs";
-import {NotificationService} from "../services/notifications/notifications.service";
-import {HttpClient} from "@angular/common/http";
-import {LocaleService} from "../services/locale.service";
+import { MatPaginatorIntl } from "@angular/material/paginator";
+import { Injectable } from '@angular/core';
+import { _, TranslateService } from "@ngx-translate/core";
+import { environment } from  "./env";
+import { catchError, tap } from "rxjs/operators";
+import { of } from "rxjs";
+import { NotificationService } from "../services/notifications/notifications.service";
+import { HttpClient } from "@angular/common/http";
+import { LocaleService } from "../services/locale.service";
 
 @Injectable()
 export class CustomMatPaginatorIntl extends MatPaginatorIntl {
@@ -31,33 +31,19 @@ export class CustomMatPaginatorIntl extends MatPaginatorIntl {
         private http: HttpClient,
         private notify: NotificationService,
         private translate: TranslateService,
-        private localeService: LocaleService,
+        private localeService: LocaleService
     ) {
         super();
         this.getAndInitTranslations();
     }
 
     getAndInitTranslations() {
-        if (this.localeService.currentLang === undefined) {
-            this.http.get(API_URL + '/ws/i18n/getCurrentLang').pipe(
+        this.itemsPerPageLabel = '';
+        if (!this.localeService.currentLang) {
+            this.http.get(environment['url'] + '/ws/i18n/getCurrentLang').pipe(
                 tap((data: any) => {
                     this.translate.use(data.lang);
-                    this.translate.get('PAGINATOR.items_per_page').subscribe((translated: string) => {
-                        this.itemsPerPageLabel = translated;
-                    });
-                    this.translate.get('PAGINATOR.next_page').subscribe((translated: string) => {
-                        this.nextPageLabel = translated;
-                    });
-                    this.translate.get('PAGINATOR.first_page').subscribe((translated: string) => {
-                        this.firstPageLabel = translated;
-                    });
-                    this.translate.get('PAGINATOR.last_page').subscribe((translated: string) => {
-                        this.lastPageLabel = translated;
-                    });
-                    this.translate.get('PAGINATOR.previous_page').subscribe((translated: string) => {
-                        this.previousPageLabel = translated;
-                    });
-                    this.changes.next();
+                    this.translateLabels();
                 }),
                 catchError((err: any) => {
                     console.debug(err);
@@ -65,27 +51,29 @@ export class CustomMatPaginatorIntl extends MatPaginatorIntl {
                     return of(false);
                 })
             ).subscribe();
-        }else {
-            this.translate.get('PAGINATOR.items_per_page').subscribe((translated: string) => {
-                this.itemsPerPageLabel = translated;
-            });
-            this.translate.get('PAGINATOR.next_page').subscribe((translated: string) => {
-                this.nextPageLabel = translated;
-            });
-            this.translate.get('PAGINATOR.first_page').subscribe((translated: string) => {
-                this.firstPageLabel = translated;
-            });
-            this.translate.get('PAGINATOR.last_page').subscribe((translated: string) => {
-                this.lastPageLabel = translated;
-            });
-            this.translate.get('PAGINATOR.previous_page').subscribe((translated: string) => {
-                this.previousPageLabel = translated;
-            });
+        } else {
+            this.translateLabels();
             this.changes.next();
         }
     }
 
-    override getRangeLabel = (page: number, pageSize: number, length: number) =>  {
+    translateLabels() {
+        this.translate.get('PAGINATOR.next_page').subscribe((translated: string) => {
+            this.nextPageLabel = translated;
+        });
+        this.translate.get('PAGINATOR.first_page').subscribe((translated: string) => {
+            this.firstPageLabel = translated;
+        });
+        this.translate.get('PAGINATOR.last_page').subscribe((translated: string) => {
+            this.lastPageLabel = translated;
+        });
+        this.translate.get('PAGINATOR.previous_page').subscribe((translated: string) => {
+            this.previousPageLabel = translated;
+        });
+        this.changes.next();
+    }
+
+    override getRangeLabel = (page: number, pageSize: number, length: number) => {
         if (length === 0 || pageSize === 0) { return '0 ' + this.translate.instant('PAGINATOR.of') + ` ${length}`; }
 
         length = Math.max(length, 0);
@@ -93,12 +81,10 @@ export class CustomMatPaginatorIntl extends MatPaginatorIntl {
         const startIndex = page * pageSize;
 
         // If the start index exceeds the list length, do not try and fix the end index to the end.
-        const endIndex = startIndex < length ?
-            Math.min(startIndex + pageSize, length):
-            startIndex + pageSize;
+        const endIndex = startIndex < length ? Math.min(startIndex + pageSize, length) : startIndex + pageSize;
 
         const nbPage = Math.ceil(length / pageSize);
-        return ` ${startIndex + 1} - ${endIndex} ` + this.translate.instant('PAGINATOR.on') + ` ${length} ` + ' | ' +
+        return ` ${startIndex + 1} - ${endIndex} ` + ' | ' +
             this.translate.instant('PAGINATOR.page') + ` ${page + 1} / ${nbPage}`;
     };
 }

@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,94 +11,25 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
-import json
-import os
+
 import sys
-import time
-import tempfile
-from symbol import import_from
-
-from kuyruk import Kuyruk
-from src.backend.main import timer, check_file, create_classes
-from src.backend.import_classes import _Files, _Config, _Splitter, _SeparatorQR, _Log
-
-OCforInvoices = Kuyruk()
+from .functions import get_custom_array, retrieve_config_from_custom_id
 
 
-@OCforInvoices.task(queue='splitter')
 def launch(args):
-    start = time.time()
+    if not retrieve_config_from_custom_id(args['custom_id']):
+        sys.exit('Custom config file couldn\'t be found')
 
-    # Init all the necessary classes
-    config_name = _Config(args['config'])
-    config_file = config_name.cfg['PROFILE']['cfgpath'] + '/config_' + config_name.cfg['PROFILE']['id'] + '.ini'
-
-    if not os.path.exists(config_file):
-        sys.exit('Config file couldn\'t be found')
-
-    config, locale, log, ocr, database, spreadsheet, smtp = create_classes(config_file)
-    tmp_folder = tempfile.mkdtemp(dir=config.cfg['SPLITTER']['batchpath']) + '/'
-    filename = tempfile.NamedTemporaryFile(dir=tmp_folder).name
-    files = _Files(filename, log, locale, config)
-
-    remove_blank_pages = False
-    if 'input_id' in args:
-        input_settings = database.select({
-            'select': ['*'],
-            'table': ['inputs'],
-            'where': ['input_id = %s', 'module = %s'],
-            'data': [args['input_id'], 'verifier'],
-        })
-        if input_settings:
-            remove_blank_pages = input_settings[0]['remove_blank_pages']
-
-    separator_qr = _SeparatorQR(log, config, tmp_folder, 'splitter', files, remove_blank_pages)
-    splitter = _Splitter(config, database, locale, separator_qr, log)
-
-    if args.get('isMail') is not None and args['isMail'] is True:
-        log = _Log((args['log']), smtp)
-        log.info('Process attachment n°' + args['cpt'] + '/' + args['nb_of_attachments'])
-
-    database.connect()
-    if args['file'] is not None:
-        path = args['file']
-        if check_file(files, path, config, log) is not False:
-            if 'input_id' in args and args['input_id']:
-                splitter_method = database.select({
-                    'select': ['splitter_method_id'],
-                    'table': ['inputs'],
-                    'where': ['status <> %s', 'input_id = %s', 'module = %s'],
-                    'data': ['DEL', args['input_id'], 'splitter']
-                })[0]
-                available_split_methods_path = config.cfg['SPLITTER']['methodspath'] + "/splitter_methods.json"
-                if len(splitter_method) > 0 and os.path.isfile(available_split_methods_path):
-                    with open(available_split_methods_path, encoding='UTF-8') as json_file:
-                        available_split_methods = json.load(json_file)
-                        for available_split_method in available_split_methods['methods']:
-                            if available_split_method['id'] == splitter_method['splitter_method_id']:
-                                split_method = import_from(config, available_split_method['script'], available_split_method['method'])
-                                log.info('Split using method : {}'.format(available_split_method['id']))
-                                split_method(args, path, log, splitter, files, tmp_folder, config)
-            else:
-                log.error("The input_id doesn't exists in database")
-    database.conn.close()
-    end = time.time()
-    log.info('Process end after ' + timer(start, end) + '')
-
-
-def import_from(config, script, method):
-    """
-    Import an attribute, function or class from a module.
-    :param method: Method to call
-    :param path: A path descriptor in the form of 'pkg.module.submodule:attribute'
-    :type path: str
-    """
-    import sys
-    sys.path.append(config.cfg['SPLITTER']['methodspath'])
-    script = script.replace('.py', '')
-    module = __import__(script, fromlist=method)
-    return getattr(module, method)
+    path = retrieve_config_from_custom_id(args['custom_id']).replace('/config/config.ini', '')
+    custom_array = get_custom_array([args['custom_id'], path])
+    if 'process_queue_splitter' not in custom_array or not custom_array['process_queue_splitter'] and not custom_array['process_queue_splitter']['path']:
+        from src.backend import process_queue_splitter
+    else:
+        custom_array['process_queue_splitter']['path'] = 'custom.' + custom_array['process_queue_splitter']['path'].split('.custom.')[1]
+        process_queue_splitter = getattr(__import__(custom_array['process_queue_splitter']['path'],
+                                                    fromlist=[custom_array['process_queue_splitter']['module']]),
+                                         custom_array['process_queue_splitter']['module'])
+    process_queue_splitter.launch(args)

@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
- Open-Capture for Invoices is free software: you can redistribute it and/or modify
+ Open-Capture is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
  the Free Software Foundation, either version 3 of the License, or
  (at your option) any later version.
@@ -11,86 +11,135 @@
  GNU General Public License for more details.
 
  You should have received a copy of the GNU General Public License
- along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+ along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
  @dev : Oussama Brich <oussama.brich@edissyum.com> */
 
-import {Component, OnDestroy, OnInit, ViewChild} from '@angular/core';
-import {API_URL} from "../../env";
-import {catchError, debounceTime, delay, filter, finalize, map, takeUntil, tap} from "rxjs/operators";
-import {of, ReplaySubject, Subject} from "rxjs";
-import {HttpClient} from "@angular/common/http";
-import {LocalStorageService} from "../../../services/local-storage.service";
-import {ActivatedRoute, Router} from "@angular/router";
-import {FormBuilder, FormControl, FormGroup, Validators} from "@angular/forms";
-import {AuthService} from "../../../services/auth.service";
-import {UserService} from "../../../services/user.service";
-import {TranslateService} from "@ngx-translate/core";
-import {NotificationService} from "../../../services/notifications/notifications.service";
-import {DomSanitizer} from "@angular/platform-browser";
-import {CdkDragDrop, moveItemInArray, transferArrayItem} from "@angular/cdk/drag-drop";
-import {MatDialog} from "@angular/material/dialog";
-import {DocumentTypeComponent} from "../document-type/document-type.component";
-import {remove} from 'remove-accents';
-import {HistoryService} from "../../../services/history.service";
-
-export interface Batch {
-    id: number
-    input_id: number
-    image_url: any
-    file_name: string
-    page_number: number
-    batch_date: string
-}
+import moment from "moment";
+import { remove } from 'remove-accents';
+import { environment } from "../../env";
+import { UserService } from "../../../services/user.service";
+import { AuthService} from "../../../services/auth.service";
+import { LocaleService } from "../../../services/locale.service";
+import { HistoryService } from "../../../services/history.service";
+import { SessionStorageService } from "../../../services/session-storage.service";
+import { DocumentTypeComponent } from "../document-type/document-type.component";
+import { NotificationService } from "../../../services/notifications/notifications.service";
+import { ConfirmDialogComponent } from "../../../services/confirm-dialog/confirm-dialog.component";
+import { HttpClient } from "@angular/common/http";
+import { of, ReplaySubject, Subject } from "rxjs";
+import { MatDialog } from "@angular/material/dialog";
+import { _, TranslateService } from "@ngx-translate/core";
+import { DomSanitizer } from "@angular/platform-browser";
+import { ActivatedRoute, Router } from "@angular/router";
+import { MatCheckboxChange } from "@angular/material/checkbox";
+import { FormControl, FormGroup, Validators } from "@angular/forms";
+import { Component, HostListener, OnDestroy, OnInit, SecurityContext, ViewChild } from '@angular/core';
+import { CdkDragDrop, moveItemInArray, transferArrayItem } from "@angular/cdk/drag-drop";
+import { catchError, debounceTime, delay, filter, finalize, map, takeUntil, tap } from "rxjs/operators";
 
 export interface Field {
-    id: number
-    label_short: string
-    label: string
-    type: string
-    metadata_key: string
-    class: string
-    required: string
+    id                   : number
+    settings             : any
+    type                 : string
+    label                : string
+    class                : string
+    required             : boolean
+    disabled             : boolean
+    resultMask           : string
+    searchMask           : string
+    validationMask       : string
+    metadata_key         : string
+    label_short          : string
+    invert_fields        : string[]
+    conditioned_fields   : string[]
+    conditioned_doctypes : string[]
 }
 
 @Component({
     selector: 'app-viewer',
     templateUrl: './splitter-viewer.component.html',
     styleUrls: ['./splitter-viewer.component.scss'],
+    standalone: false
 })
 export class SplitterViewerComponent implements OnInit, OnDestroy {
-    @ViewChild(`cdkStepper`) cdkDropList: CdkDragDrop<any> | undefined;
-    fieldsCategories              : any       = {
+    @HostListener('window:beforeunload', ['$event'])
+    beforeunloadHandler($event: any) {
+        if (this.hasUnsavedChanges) {
+            $event.returnValue = true;
+        }
+        this.removeLockByBatchId();
+    }
+    @ViewChild('cdkStepper') cdkDropList: CdkDragDrop<any> | undefined;
+
+    loading                     : boolean       = true;
+    attachmentsLength           : number        = 0;
+    showZoomPage                : boolean       = false;
+    isBatchOnDrag               : boolean       = false;
+    batchesLoading              : boolean       = false;
+    validateLoading             : boolean       = false;
+    downloadLoading             : boolean       = false;
+    saveInfosLoading            : boolean       = false;
+    documentsLoading            : boolean       = false;
+    hasUnsavedChanges           : boolean       = false;
+    addDocumentLoading          : boolean       = false;
+    isMouseInDocumentList       : boolean       = false;
+    batchMetadataOpenState      : boolean       = true;
+    sidenavOpened               : boolean       = false;
+    documentMetadataOpenState   : boolean       = false;
+    enableAttachments           : boolean       = false;
+    batchForm                   : FormGroup     = new FormGroup({});
+    batches                     : any[]         = [];
+    forms                       : any[]         = [];
+    status                      : any[]         = [];
+    metadata                    : any[]         = [];
+    documents                   : any[]         = [];
+    movedPages                  : any[]         = [];
+    deletedPagesIds             : number[]      = [];
+    deletedDocumentsIds         : number[]      = [];
+    DropListDocumentsIds        : string[]      = [];
+    batchMetadataValues         : any           = {};
+    customFields                : any           = {};
+    inputMode                   : string        = "Manual";
+    currentTime                 : string        = "";
+    toolSelectedOption          : string        = "";
+    timeLabels                  : any           = {
+        'today'     : _('BATCH.today'),
+        'yesterday' : _('BATCH.yesterday'),
+        'older'     : _('BATCH.older')
+    };
+    defaultDoctype              : any           = {
+        label       : null,
+        key         : null
+    };
+    zoomPage                    : any           = {
+        thumbnail   : "",
+        rotation    : 0
+    };
+    currentBatch                : any           = {
+        id                  : -1,
+        formId              : -1,
+        inputId             : -1,
+        pageIdInLoad        : -1,
+        previousFormId      : -1,
+        outputs             : [],
+        status              : '',
+        progress            : 100,
+        maxSplitIndex       : 0,
+        selectedPagesCount  : 0,
+        selectedDocument    : {
+            id              : '',
+            displayOrder    : -1
+        }
+    };
+    fieldsCategories        : any           = {
         'batch_metadata'    : [],
         'document_metadata' : []
     };
-    batchForm                   : FormGroup     = new FormGroup({});
-    documentMetadataOpenState   : boolean       = false;
-    showZoomPage                : boolean       = false;
-    loading                     : boolean       = true;
-    addDocumentLoading          : boolean       = false;
-    documentsLoading            : boolean       = false;
-    batchMetadataOpenState      : boolean       = true;
-    currentBatch                : any           = {id: -1, inputId: -1, maxSplitIndex: 0};
-    batchMetadataValues         : any           = {};
-    documentsForms              : FormGroup[]   = [];
-    batches                     : Batch[]       = [];
-    deletedPagesIds             : number[]      = [];
-    movedPages                  : any[]         = [];
-    deletedDocumentsIds         : number[]      = [];
-    outputs                     : any           = [];
-    metadata                    : any[]         = [];
-    documents                   : any           = [];
-    pagesImageUrls              : any           = [];
-    documentsIds                : string[]      = [];
-    zoomImageUrl                : string        = "";
-    toolSelectedOption          : string        = "";
-    inputMode                   : string        = "Manual";
-    defaultDoctype              : any           = {
-        label   : null,
-        key     : null
+
+    configurations          : any = {
+        'enableSplitterProgressBar': true
     };
-    defaultDocType              : any;
 
     /** indicate search operation is in progress */
     public searching        : boolean   = false;
@@ -108,51 +157,149 @@ export class SplitterViewerComponent implements OnInit, OnDestroy {
         private route: ActivatedRoute,
         public userService: UserService,
         private _sanitizer: DomSanitizer,
-        private formBuilder: FormBuilder,
         private authService: AuthService,
-        private translate: TranslateService,
+        public translate: TranslateService,
         private notify: NotificationService,
+        public localeService: LocaleService,
         private historyService: HistoryService,
-        private localeStorageService: LocalStorageService,
+        private sessionStorageService: SessionStorageService
     ) {}
 
-    ngOnInit(): void {
-        this.localeStorageService.save('splitter_or_verifier', 'splitter');
+    async ngOnInit(): Promise<void> {
+        if (!this.authService.headersExists) {
+            this.authService.generateHeaders();
+        }
+
+        this.http.get(environment['url'] + '/ws/config/getConfigurationNoAuth/enableAttachments').pipe(
+            tap((data: any) => {
+                if (data.configuration.length === 1) {
+                    this.enableAttachments = data.configuration[0].data.value;
+                }
+            }),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+
+        this.sessionStorageService.save('splitter_or_verifier', 'splitter');
         this.userService.user   = this.userService.getUserFromLocal();
         this.currentBatch.id    = this.route.snapshot.params['id'];
-        this.loadBatches();
+        this.currentTime        = this.route.snapshot.params['currentTime'];
+
+        const customFields = await this.getCustomFields();
+        this.customFields = customFields.customFields;
+
+        _('SPLITTER.add_document_impossible_attachments')
+        this.getConfigurations();
         this.loadSelectedBatch();
-        this.loadMetadata();
+        this.updateBatchLock();
         this.translate.get('HISTORY-DESC.viewer_splitter', {batch_id: this.currentBatch.id}).subscribe((translated: string) => {
             this.historyService.addHistory('splitter', 'viewer', translated);
         });
     }
 
+    onScreenClick(event: MouseEvent) {
+        const clickedElement = event.target as HTMLElement;
+        const zoomPageElement = document.getElementById('zoom-image');
+
+        if (zoomPageElement && !zoomPageElement.contains(clickedElement)) {
+            this.showZoomPage = false;
+        }
+    }
+
+    setValuesFromSavedMetadata(autocompletionValue: any): void {
+        for (const field of this.fieldsCategories['batch_metadata']) {
+            if (this.currentBatch.customFieldsValues.hasOwnProperty(field['label_short'])) {
+                const savedValue = this.currentBatch.customFieldsValues[field['label_short']];
+                if (autocompletionValue.hasOwnProperty(field['label_short'])
+                    && autocompletionValue[field['label_short']] !== savedValue) {
+                    this.batchMetadataValues[field['label_short']] = savedValue;
+                    this.batchForm.controls[field['label_short']].setValue(savedValue);
+                }
+            }
+        }
+    }
+
+    async getCustomFields(): Promise<any> {
+        return await this.http.get(environment['url'] + '/ws/customFields/list?module=splitter', {headers: this.authService.headers}).toPromise();
+    }
+
+    updateBatchLock() {
+        this.http.post(environment['url'] + '/ws/splitter/lockBatch', {
+            'batchId' : this.currentBatch.id,
+            'lockedBy': this.userService.user.username
+        }, {headers: this.authService.headers}).pipe(
+            catchError((err: any) => {
+                this.loading = false;
+                this.notify.handleErrors(err);
+                console.debug(err);
+                return of(false);
+            })
+        ).subscribe();
+    }
+
     loadSelectedBatch(): void {
+        this.defaultDoctype = {};
         this.documents      = [];
-        this.documentsForms = [];
         this.loadBatchById();
     }
 
     loadBatchById(): void {
-        this.loading = true;
-        this.http.get(API_URL + '/ws/splitter/batches/' + this.currentBatch.id, {headers: this.authService.headers}).pipe(
+        this.http.post(environment['url'] + '/ws/splitter/batches/list', {
+                'batchId': this.currentBatch.id,
+                'userId': this.userService.user.id
+            },
+            {headers: this.authService.headers}).pipe(
             tap((data: any) => {
                 this.currentBatch = {
-                    maxSplitIndex      : 0,
-                    id                 : data.batches[0]['id'],
-                    formId             : data.batches[0]['form_id'],
-                    customFieldsValues : data.batches[0]['data'].hasOwnProperty('custom_fields') ? data.batches[0]['data']['custom_fields'] : {},
+                    id                  : data.batches[0]['id'],
+                    status              : data.batches[0]['status'],
+                    formId              : data.batches[0]['form_id'],
+                    previousFormId      : data.batches[0]['form_id'],
+                    workflowId          : data.batches[0]['workflow_id'],
+                    customFieldsValues  : data.batches[0]['data'].hasOwnProperty('custom_fields') ? data.batches[0]['data']['custom_fields'] : {},
+                    selectedPagesCount  : 0,
+                    outputs             : [],
+                    progress            : 100,
+                    maxSplitIndex       : 0,
+                    selectedPageId      : 0,
+                    selectedDocument    : {
+                        id           : '',
+                        displayOrder : -1
+                    }
                 };
+                this.loadForms();
+                this.loadBatches();
+                this.loadStatus();
                 this.loadFormFields();
-                this.loadDocuments();
                 this.loadDefaultDocType();
                 this.loadOutputsData();
+                this.loadReferentialOnView();
             }),
             catchError((err: any) => {
                 this.loading = false;
-                this.notify.error(err);
+                this.notify.handleErrors(err);
                 console.debug(err);
+                return of(false);
+            })
+        ).subscribe();
+    }
+
+    getStatusLabel(statusId: string) {
+        const statusFound = this.status.find(status => status.id === statusId);
+        return statusFound ? statusFound.label : undefined;
+    }
+
+    loadStatus(): void {
+        this.http.get(environment['url'] + '/ws/status/splitter/list', {headers: this.authService.headers}).pipe(
+            tap((data: any) => {
+                this.status = data.status;
+            }),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
                 return of(false);
             })
         ).subscribe();
@@ -160,26 +307,13 @@ export class SplitterViewerComponent implements OnInit, OnDestroy {
 
     loadOutputsData(): void {
         this.loading = true;
-        this.outputs = [];
-        this.http.get(API_URL + '/ws/forms/getById/' + this.currentBatch.formId, {headers: this.authService.headers}).pipe(
-            tap((formData: any) => {
-                for(const outputsId of formData['outputs']) {
-                    this.http.get(API_URL + '/ws/outputs/getById/' + outputsId, {headers: this.authService.headers}).pipe(
-                        tap((outputsData: any) => {
-                            this.outputs.push(outputsData['output_label']);
-                        }),
-                        catchError((err: any) => {
-                            this.loading = false;
-                            this.notify.error(err);
-                            console.debug(err);
-                            return of(false);
-                        })
-                    ).subscribe();
-                }
+        this.http.get(environment['url'] + '/ws/splitter/batch/' + this.currentBatch.id + '/outputs', {headers: this.authService.headers}).pipe(
+            tap((data: any) => {
+                this.currentBatch.outputs = data.outputs;
             }),
             catchError((err: any) => {
                 this.loading = false;
-                this.notify.error(err);
+                this.notify.handleErrors(err);
                 console.debug(err);
                 return of(false);
             })
@@ -187,23 +321,54 @@ export class SplitterViewerComponent implements OnInit, OnDestroy {
     }
 
     loadBatches(): void {
-        this.http.get(API_URL + '/ws/splitter/batches/0/5/None/NEW', {headers: this.authService.headers}).pipe(
+        this.batchesLoading = true;
+        this.batches        = [];
+        this.loading        = true;
+
+        this.http.post(environment['url'] + '/ws/splitter/batches/list', {
+            'page': 0,
+            'size': 10,
+            'time': this.currentTime,
+            'userId': this.userService.user.id,
+            'status': this.currentBatch.status
+        }, {headers: this.authService.headers}).pipe(
             tap((data: any) => {
-                data.batches.forEach((batch: Batch) =>
-                    this.batches.push(
-                        {
-                            id          : batch.id,
-                            image_url   : this.sanitize(batch.image_url),
-                            file_name   : batch.file_name,
-                            page_number : batch.page_number,
-                            batch_date  : batch.batch_date,
-                            input_id    : batch.input_id,
-                        }
-                    )
+                data.batches.forEach((batch: any) =>
+                    this.batches.push({
+                        id               : batch['id'],
+                        inputId          : batch['input_id'],
+                        formLabel        : batch['form_label'],
+                        date             : batch['batch_date'],
+                        customerName     : batch['customer_name'],
+                        documentsCount   : batch['documents_count'],
+                        attachmentsCount : batch['attachments_count'],
+                        thumbnail        : this.sanitize(batch['thumbnail']),
+                        fileName        : batch['subject'] ? batch['subject'] : batch['file_name']
+                    })
                 );
+
+                // Move current batch to the top of the list
+                const currentBatchIndex = this.batches.findIndex((batch: any) => batch.id === this.currentBatch.id);
+                if (currentBatchIndex > -1) {
+                    this.batches.unshift(this.batches.splice(currentBatchIndex, 1)[0]);
+                } else {
+                    this.batches.unshift({
+                        id             : this.currentBatch.id,
+                        inputId        : this.currentBatch.inputId,
+                        fileName       : this.currentBatch.fileName,
+                        formLabel      : this.currentBatch.formLabel,
+                        date           : this.currentBatch.date,
+                        customerName   : this.currentBatch.customerName,
+                        documentsCount : this.currentBatch.documentsCount,
+                        thumbnail      : this.sanitize(this.currentBatch.thumbnail)
+                    });
+                }
+
+                this.batchesLoading = false;
             }),
             catchError((err: any) => {
-                this.notify.error(err);
+                this.batchesLoading = false;
+                this.notify.handleErrors(err);
                 return of(false);
             })
         ).subscribe();
@@ -211,141 +376,184 @@ export class SplitterViewerComponent implements OnInit, OnDestroy {
 
     loadDocuments(): void {
         this.documentsLoading = true;
-        this.http.get(API_URL + '/ws/splitter/documents/' + this.currentBatch.id, {headers: this.authService.headers}).pipe(
+        this.http.get(environment['url'] + '/ws/splitter/documents/' + this.currentBatch.id, {headers: this.authService.headers}).pipe(
             tap((data: any) => {
-                for (let i = 0; i < data['documents'].length; i++) {
+                for (let documentIndex = 0; documentIndex < data['documents'].length; documentIndex++) {
                     // -- Add documents metadata --
-                    this.documents[i] = {
-                        id                  : "document-" + data['documents'][i]['id'],
-                        documentTypeName    : data['documents'][i]['doctype_label'] ? data['documents'][i]['doctype_label'] : (this.defaultDoctype.label || ""),
-                        documentTypeKey     : data['documents'][i]['doctype_key'] ? data['documents'][i]['doctype_key'] : (this.defaultDoctype.label || ""),
-                        status              : data['documents'][i]['status'],
-                        splitIndex          : data['documents'][i]['split_index'],
-                        pages               : [],
-                        class               : "",
-                        customFieldsValues  : {},
+                    this.documents[documentIndex] = {
+                        id                 : "document-" + data['documents'][documentIndex]['id'],
+                        doctypeLabel       : data['documents'][documentIndex]['doctype_label'] ? data['documents'][documentIndex]['doctype_label'] : (this.defaultDoctype.label || ""),
+                        doctypeKey         : data['documents'][documentIndex]['doctype_key'] ? data['documents'][documentIndex]['doctype_key'] : (this.defaultDoctype.label || ""),
+                        displayOrder       : data['documents'][documentIndex]['display_order'],
+                        splitIndex         : data['documents'][documentIndex]['split_index'],
+                        status             : data['documents'][documentIndex]['status'],
+                        pages              : [],
+                        class              : "",
+                        customFieldsValues : {}
                     };
+
                     // -- Get max split index, used when adding a new document --
-                    if (this.documents[i].splitIndex > this.currentBatch.maxSplitIndex) {
-                        this.currentBatch.maxSplitIndex = this.documents[i].splitIndex;
+                    if (this.documents[documentIndex].splitIndex > this.currentBatch.maxSplitIndex) {
+                        this.currentBatch.maxSplitIndex = this.documents[documentIndex].splitIndex;
                     }
-                    if (data['documents'][i]['data'].hasOwnProperty('custom_fields')) {
-                        this.documents[i].customFieldsValues = data['documents'][i]['data']['custom_fields'];
-                    }
-                    // -- Add documents pages --
-                    for (const page of data['documents'][i]['pages']) {
-                        this.documents[i].pages.push({
-                            id              : page['id'],
-                            sourcePage      : page['source_page'],
-                            showZoomButton  : false,
-                            checkBox        : false,
-                        });
-                        this.pagesImageUrls.push({
-                            pageId  : page['id'],
-                            url     : this.sanitize(page['image_url'])
-                        });
+                    if (data['documents'][documentIndex]['data'].hasOwnProperty('custom_fields')) {
+                        this.documents[documentIndex].customFieldsValues = data['documents'][documentIndex]['data']['custom_fields'];
                     }
 
+                    // -- Add document forms --
+                    this.documents[documentIndex].form = this.getFormForDocument(documentIndex);
+
+                    // -- Add documents pages --
+                    for (const page of data['documents'][documentIndex]['pages']) {
+                        this.documents[documentIndex].pages.push({
+                            id             : page['id'],
+                            showZoomButton : false,
+                            checkBox       : false,
+                            rotation       : page['rotation'],
+                            sourcePage     : page['source_page'],
+                            thumbnail      : this.sanitize(page['thumbnail'])
+                        });
+                    }
                 }
-                // -- Add document forms --
-                this.loadDocumentsForms();
+                this.selectDocument(this.documents[0]);
+                this.enableFieldsByDoctypeCondition();
                 this.documentsLoading = false;
             }),
             catchError((err: any) => {
-                this.notify.error(err);
+                this.notify.handleErrors(err);
                 console.debug(err);
                 this.documentsLoading = false;
                 return of(false);
             })
         ).subscribe();
+    }
+
+    updateDocumentDisplayOrder() {
+        const updatedDocuments = [];
+        for (const document of this.documents) {
+            const currentDisplayOrder   = document.displayOrder;
+            const newDisplayOrder       = currentDisplayOrder + 1;
+            if (currentDisplayOrder > this.currentBatch.selectedDocument.displayOrder) {
+                document.displayOrder = newDisplayOrder;
+                updatedDocuments.push({
+                    'id': Number(document.id.split('-').pop()),
+                    'displayOrder': newDisplayOrder
+                });
+            }
+        }
+        return updatedDocuments;
+    }
+
+    sortDocumentsByDisplayOrder() {
+        this.documents.sort((a:any, b:any) => (a.displayOrder > b.displayOrder) ? 1 : -1);
     }
 
     createDocument() {
-        if(this.addDocumentLoading) { return; }
-        this.http.post(API_URL + '/ws/splitter/addDocument',
+        if (this.addDocumentLoading) { return; }
+        this.hasUnsavedChanges = true;
+        const documentDisplayOrder  = this.updateDocumentDisplayOrder();
+        this.addDocumentLoading = true;
+
+        this.http.post(environment['url'] + '/ws/splitter/addDocument',
             {
-                'batchId'       : this.currentBatch.id,
-                'splitIndex'    : this.currentBatch.maxSplitIndex + 1,
+                'batchId'           : this.currentBatch.id,
+                'updatedDocuments'  : documentDisplayOrder,
+                'userId'            : this.userService.user.id,
+                'workflowId'        : this.currentBatch.workflowId,
+                'splitIndex'        : this.currentBatch.maxSplitIndex + 1,
+                'displayOrder'      : this.currentBatch.selectedDocument.displayOrder + 1
             },
             {headers: this.authService.headers}).pipe(
             tap((data: any) => {
+                const newId = `document-${data.newDocumentId}`;
                 this.documents.push({
-                    id                  : "document-" + data.newDocumentId,
-                    status              : "NEW",
-                    documentTypeName    : this.defaultDoctype.label,
-                    documentTypeKey     : this.defaultDoctype.key,
-                    pages               : [],
-                    customFieldsValues  : {},
-                    class               : "",
+                    id                 : newId,
+                    doctypeLabel       : "",
+                    doctypeKey         : "",
+                    class              : "",
+                    pages              : [],
+                    customFieldsValues : {},
+                    status             : "NEW",
+                    splitIndex         : this.currentBatch.maxSplitIndex + 1,
+                    displayOrder       : this.currentBatch.selectedDocument.displayOrder + 1
                 });
-                this.addFormForDocument({}, this.documents.length);
+                this.documents[this.documents.length - 1].form = this.getFormForDocument(this.documents.length - 1);
+                this.sortDocumentsByDisplayOrder();
                 this.currentBatch.maxSplitIndex++;
                 this.addDocumentLoading = false;
+                this.notify.success(this.translate.instant('SPLITTER.document_added_with_success'));
             }),
             catchError((err: any) => {
                 this.addDocumentLoading = false;
-                this.notify.error(err.message);
+                this.notify.handleErrors(err);
                 console.debug(err);
                 return of(false);
             })
         ).subscribe();
     }
 
-    loadDocumentsForms() {
-        let cpt = 0;
-        this.documentsForms = [];
-        for (const document of this.documents) {
-            this.addFormForDocument(document.customFieldsValues, cpt);
-            cpt++;
-        }
-    }
-
-    addFormForDocument(customFieldsValues: any, documentIndex: number) {
+    getFormForDocument(documentIndex: number) {
         const newForm = new FormGroup({});
-        for (let fieldsIndex = 0; fieldsIndex < this.fieldsCategories['document_metadata'].length; fieldsIndex++) {
-            const control = new FormControl();
-            const labelShort = this.fieldsCategories['document_metadata'][fieldsIndex].label_short;
-            if(customFieldsValues.hasOwnProperty(labelShort))
-                control.setValue(customFieldsValues[labelShort]);
-            control.valueChanges.subscribe(value => {
-                this.documents[documentIndex]['customFieldsValues'][labelShort] = value;
-            });
+        for (const field of this.fieldsCategories['document_metadata']) {
+            const control = field.required ? new FormControl('', Validators.required) : new FormControl('');
+            const labelShort = field.label_short;
+
+            if (this.documents[documentIndex]['customFieldsValues'].hasOwnProperty(labelShort)) {
+                control.setValue(this.documents[documentIndex]['customFieldsValues'][labelShort]);
+                control.valueChanges.subscribe(value => {
+                    this.documents[documentIndex]['customFieldsValues'][labelShort] = value;
+                });
+            }
+
             newForm.addControl(labelShort, control);
-            if (this.fieldsCategories['document_metadata'][fieldsIndex].metadata_key) { // used to control autocomplete search fields
-                const controlSearch = new FormControl();
+            if (field.metadata_key) { // used to control autocomplete search fields
+                const controlSearch = new FormControl('');
                 newForm.addControl("search_" + labelShort, controlSearch);
             }
         }
-        this.documentsForms.push(newForm);
+        return newForm;
     }
 
-    getPageUrlById(pageId: number): any {
-        for (const pageImage of this.pagesImageUrls) {
-            if (pageImage.pageId === pageId)
-                return pageImage.url;
-        }
-        return "";
+    getZoomPage(page: any) {
+        this.currentBatch.pageIdInLoad = page.id;
+        this.http.get(environment['url'] + '/ws/splitter/pages/' + (page.id).toString() + '/fullThumbnail', {headers: this.authService.headers}).pipe(
+            tap((data: any) => {
+                this.showZoomPage = true;
+                this.zoomPage = {
+                    pageId    : page.id,
+                    rotation  : page.rotation,
+                    thumbnail : this.sanitize(data['fullThumbnail'])
+                };
+                this.currentBatch.pageIdInLoad = -1;
+            }),
+            catchError((err: any) => {
+                console.debug(err);
+                this.currentBatch.pageIdInLoad = -1;
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
     }
 
     /* -- Metadata -- */
     loadDefaultDocType() {
         this.loading      = true;
-        this.http.get(API_URL + '/ws/doctypes/list/' + (this.currentBatch.formId).toString(), {headers: this.authService.headers}).pipe(
+        this.http.get(environment['url'] + '/ws/doctypes/list/' + (this.currentBatch.formId).toString(), {headers: this.authService.headers}).pipe(
             tap((data: any) => {
                 data.doctypes.forEach((doctype: {
-                        id          : any
-                        key         : string
-                        label       : string
-                        type        : string
-                        is_default  : boolean
+                        id         : any
+                        key        : string
+                        type       : string
+                        label      : string
+                        is_default : boolean
                     }) => {
-                        if(doctype.is_default && doctype.type === 'document') {
+                        if (doctype.is_default && doctype.type === 'document') {
                             this.defaultDoctype = {
                                 'id'        : doctype.id,
                                 'key'       : doctype.key,
                                 'label'     : doctype.label,
                                 'type'      : doctype.type,
-                                'isDefault' : doctype.is_default,
+                                'isDefault' : doctype.is_default
                             };
                         }
                     }
@@ -361,13 +569,21 @@ export class SplitterViewerComponent implements OnInit, OnDestroy {
         ).subscribe();
     }
 
-    changeInputMode($event: any) {
-        this.inputMode = $event.checked ? "Auto" : "Manual";
-        this.batchMetadataValues = null;
-        this.fillDataValues({});
+    getPlaceholderFromResultMask(mask: string, metadata: any) {
+        const maskVariables = mask ? mask.split('#') : [];
+        const result        = [];
+        for (const maskVariable of maskVariables!) {
+            result.push(metadata.hasOwnProperty(maskVariable) ? metadata[maskVariable] : maskVariable);
+        }
+        return result.join(' ');
+    }
+
+    getPlaceholderFromSearchMask(mask: string, label: string) {
+        return mask ? mask.replace('#label', label) : label;
     }
 
     fillDataValues(data: any): void {
+        this.hasUnsavedChanges = true;
         for (const field of this.fieldsCategories['batch_metadata']) {
             const key = field['metadata_key'];
             const newValue = data.hasOwnProperty(key) ? data[key] : '';
@@ -375,47 +591,81 @@ export class SplitterViewerComponent implements OnInit, OnDestroy {
                 this.batchForm.get(key)?.setValue(newValue);
             }
         }
+
         for (const field of this.fieldsCategories['document_metadata']) {
             const key = field['metadata_key'];
             const newValue = data.hasOwnProperty(key) ? data[key] : '';
-            for (let i = 0; i < this.documentsForms.length; i++) {
-                if (key && this.documentsForms[i].get(key)) {
-                    this.documentsForms[i].get(key)?.setValue(newValue);
+            for (const document of this.documents) {
+                if (key && document.form.get(key)) {
+                    document.form.get(key)?.setValue(newValue);
                 }
             }
         }
     }
 
-    loadReferential(): void {
-        this.http.get(API_URL + '/ws/splitter/referential', {headers: this.authService.headers}).pipe(
-            tap(() => {
-                this.loadMetadata();
+    loadReferentialOnView(): void {
+        this.http.get(environment['url'] + `/ws/splitter/metadataMethods/${this.currentBatch.formId}`, {headers: this.authService.headers}).pipe(
+            tap((data: any) => {
+                if (data.metadataMethods[0].callOnSplitterView) {
+                    this.loadReferential(false, false);
+                }
             }),
             catchError((err: any) => {
-                this.notify.error(err);
+                this.loading = false;
+                this.notify.handleErrors(err);
                 console.debug(err);
                 return of(false);
             })
         ).subscribe();
     }
 
-    loadMetadata(): void {
+    loadReferentialWithConfirmation(refreshAfterLoad: boolean): void {
         this.metadata = [];
-        this.http.get(API_URL + '/ws/splitter/metadata', {headers: this.authService.headers}).pipe(
+        this.http.get(environment['url'] + `/ws/splitter/loadReferential/${this.currentBatch.formId}`, {headers: this.authService.headers}).pipe(
             tap((data: any) => {
-                let cpt = 0;
                 data.metadata.forEach((metadataItem: any) => {
-                    metadataItem.data['id'] = cpt;
+                    metadataItem.data['metadataId'] = metadataItem['external_id'] ? metadataItem['external_id'] : metadataItem['id'];
+                    for (const field of this.fieldsCategories['batch_metadata']) {
+                        const metadataKey = field['metadata_key'];
+                        if (metadataKey && !(metadataKey in metadataItem.data)) {
+                            metadataItem.data[metadataKey] = '';
+                        }
+                    }
                     this.metadata.push(metadataItem.data);
-                    cpt++;
                 });
+                if (this.currentBatch.customFieldsValues.hasOwnProperty('metadataId')) {
+                    const autocompletionValue = this.metadata.filter(item => item.metadataId === this.currentBatch.customFieldsValues.metadataId);
+                    if (autocompletionValue.length > 0) {
+                        this.filteredServerSideMetadata.next(autocompletionValue);
+                        this.fillData((autocompletionValue[0]));
+                        this.setValuesFromSavedMetadata(autocompletionValue[0]);
+                    }
+                }
+                if (refreshAfterLoad) {
+                    this.loadSelectedBatch();
+                }
                 this.notify.success(this.translate.instant('SPLITTER.referential_updated'));
             }),
-            catchError((data: any) => {
-                this.notify.error(data['message']);
+            catchError((err: any) => {
+                this.loading = false;
+                this.notify.handleErrors(err);
+                console.debug(err);
                 return of(false);
             })
         ).subscribe();
+    }
+
+    loadReferential(refreshAfterLoad: boolean, saveModificationsBeforeReload: boolean): void {
+        if (saveModificationsBeforeReload) {
+            this.saveModifications();
+        }
+        this.loadReferentialWithConfirmation(refreshAfterLoad);
+    }
+
+    setValueChange(key: string, value: string) {
+        this.hasUnsavedChanges = true;
+        this.batchMetadataValues[key] = value;
+        this.updateProgressBar();
     }
 
     ngOnDestroy() {
@@ -425,45 +675,124 @@ export class SplitterViewerComponent implements OnInit, OnDestroy {
 
     fillData(selectedMetadata: any) {
         this.batchMetadataValues = selectedMetadata;
-        const optionId = this.batchMetadataValues['id'];
+        const optionId = this.batchMetadataValues['metadataId'];
         for (const field of this.fieldsCategories['batch_metadata']) {
             if (field['metadata_key']) {
-                this.batchForm.get(field['metadata_key'])?.setValue(optionId);
+                if (field.type === 'select' && selectedMetadata[field['metadata_key']]) {
+                    this.batchForm.get(field['metadata_key'])?.setValue(selectedMetadata[field['metadata_key']]);
+                } else {
+                    this.batchForm.get(field['metadata_key'])?.setValue(optionId);
+                    this.batchMetadataValues[field['label_short']] = selectedMetadata[field['metadata_key']];
+                }
             }
         }
     }
 
-    loadFormFields() {
-        this.http.get(API_URL + '/ws/forms/fields/getByFormId/' + this.currentBatch.formId, {headers: this.authService.headers}).pipe(
+    loadForms() {
+        this.forms = [];
+        this.http.get(environment['url'] + '/ws/forms/splitter/list?user_id=' + this.userService.user.id, {headers: this.authService.headers}).pipe(
+            tap((forms: any) => {
+                this.forms = forms.forms;
+            }),
+            finalize(() => this.loading = false),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+    }
+
+    onFormChange(newFormId: number): void {
+        const dialogRef = this.dialog.open(ConfirmDialogComponent, {
+            data:{
+                confirmTitle       : this.translate.instant('GLOBAL.confirm'),
+                confirmText        : this.translate.instant('GLOBAL.confirm_form_change'),
+                confirmButton      : this.translate.instant('GLOBAL.confirm_modification'),
+                confirmButtonColor : "green",
+                cancelButton       : this.translate.instant('GLOBAL.cancel')
+            },
+            width: "600px"
+        });
+
+        dialogRef.afterClosed().subscribe(result => {
+            if (result) {
+                this.loading = true;
+                this.http.post(environment['url'] + '/ws/splitter/changeForm',
+                    {
+                        'batchId' : this.currentBatch.id,
+                        'formId'  : newFormId
+                    },
+                    {headers: this.authService.headers}).pipe(
+                    tap(() => {
+                        this.notify.success(this.translate.instant('SPLITTER.barch_form_change_success'));
+                        this.translate.get('HISTORY-DESC.change_batch_form',
+                            {
+                                batch_id : this.currentBatch.id,
+                                form_id  : newFormId
+                            })
+                            .subscribe((translated: string) => {
+                                this.historyService.addHistory('splitter', 'viewer', translated);
+                            });
+                        this.loadSelectedBatch();
+                    }),
+                    catchError((err: any) => {
+                        this.loading = false;
+                        this.notify.handleErrors(err);
+                        console.debug(err);
+                        return of(false);
+                    })
+                ).subscribe();
+            } else {
+                this.currentBatch.formId = this.currentBatch.previousFormId;
+            }
+        });
+    }
+
+    loadFormFields(): void {
+        this.inputMode = 'Manual';
+        this.http.get(environment['url'] + '/ws/forms/fields/getByFormId/' + this.currentBatch.formId, {headers: this.authService.headers}).pipe(
             tap((data: any) => {
                 for (const fieldCategory in this.fieldsCategories) {
                     this.fieldsCategories[fieldCategory] = [];
-                    if(data.fields.hasOwnProperty(fieldCategory)) {
+                    if (data.fields.hasOwnProperty(fieldCategory)) {
                         data.fields[fieldCategory].forEach((field: Field) => {
+                            const custom_id = parseInt(field.id.toString().replace('custom_', ''));
+                            const customField = this.customFields.filter((field: any) => field.id === custom_id);
                             this.fieldsCategories[fieldCategory].push({
-                                'id'            : field.id,
-                                'label_short'   : field.label_short,
-                                'label'         : field.label,
-                                'type'          : field.type,
-                                'metadata_key'  : field.metadata_key,
-                                'class'         : field.class,
-                                'required'      : field.required,
+                                'id'                   : field.id,
+                                'type'                 : customField.length > 0 ? customField[0].type : field.type,
+                                'label'                : field.label,
+                                'class'                : field.class,
+                                'disabled'             : field.disabled,
+                                'settings'             : customField.length > 0 ? customField[0].settings : field.settings,
+                                'required'             : field.required,
+                                'searchMask'           : field.searchMask,
+                                'resultMask'           : field.resultMask,
+                                'label_short'          : customField.length > 0 ? customField[0].label_short : field.label_short,
+                                'metadata_key'         : field.metadata_key,
+                                'validationMask'       : field.validationMask,
+                                'invert_fields'        : field.invert_fields,
+                                'conditioned_fields'   : field.conditioned_fields,
+                                'conditioned_doctypes' : field.conditioned_doctypes
                             });
+                            if (fieldCategory === 'batch_metadata' && field.metadata_key && !field.metadata_key.includes("SEPARATOR_META")) {
+                                this.inputMode = 'Auto';
+                            }
                         });
                     }
                 }
                 this.batchForm = this.toBatchFormGroup();
+                this.updateProgressBar();
 
                 // listen for search field value changes
                 for (const fieldCategory in this.fieldsCategories) {
-                    if(data.fields.hasOwnProperty(fieldCategory)) {
+                    if (data.fields.hasOwnProperty(fieldCategory)) {
                         data.fields[fieldCategory].forEach((field: Field) => {
                             if (field.metadata_key && this.batchForm.get('search_' + field.label_short)) {
                                 this.batchForm.get('search_' + field.label_short)?.valueChanges
                                     .pipe(
                                         filter((search: string) => !!search),
-                                        tap(() => {
-                                        }),
                                         takeUntil(this._onDestroy),
                                         debounceTime(200),
                                         map(search => {
@@ -478,8 +807,7 @@ export class SplitterViewerComponent implements OnInit, OnDestroy {
                                             );
                                         }),
                                         delay(500)
-                                    )
-                                    .subscribe(filteredMetadata => {
+                                    ).subscribe(filteredMetadata => {
                                         this.filteredServerSideMetadata.next(filteredMetadata);
                                         this.searching = false;
                                     }, () => {
@@ -489,235 +817,750 @@ export class SplitterViewerComponent implements OnInit, OnDestroy {
                         });
                     }
                 }
+                this.loadDocuments();
             }), finalize(() => this.loading = false),
             catchError((err: any) => {
                 this.loading = false;
-                this.notify.error(err);
+                this.notify.handleErrors(err);
                 console.debug(err);
                 return of(false);
             })
         ).subscribe();
     }
 
-    toBatchFormGroup() {
-        const group: any = {};
-        this.fieldsCategories['batch_metadata'].forEach((input: Field) => {
-            group[input.label_short] = input.required ?
-                new FormControl('', Validators.required) :
-                new FormControl('');
-            if(this.currentBatch.customFieldsValues.hasOwnProperty(input.label_short)) {
-                group[input.label_short].setValue(this.currentBatch.customFieldsValues[input.label_short]);
-            }
-            if (input.metadata_key)
-                group['search_' + input.label_short] = new FormControl('');
-        });
-        return new FormGroup(group);
-    }
-    /* -- End Metadata -- */
-
-    /* -- Begin documents control -- */
-    addId(id: string) {
-        if (!this.documentsIds.includes(id))
-            this.documentsIds.push(id);
-        return id;
-    }
-
-    sanitize(url: string) {
-        return this._sanitizer.bypassSecurityTrustUrl('data:image/jpg;base64,' + url);
-    }
-
-    drop(event: CdkDragDrop<any[]>, document: any) {
-        if (event.previousContainer === event.container) {
-            moveItemInArray(event.container.data, event.previousIndex, event.currentIndex);
-        } else {
-            transferArrayItem(event.previousContainer.data,
-                event.container.data,
-                event.previousIndex,
-                event.currentIndex);
-            this.movedPages.push({
-                'pageId'        : event.container.data[event.currentIndex].id,
-                'newDocumentId' : Number(document['id'].split('-')[1]),
-                'isAddInNewDoc' : (document.status === 'USERADD')
-            });
-        }
-    }
-
-    openDocumentTypeDialog(document: any): void {
-        const dialogRef = this.dialog.open(DocumentTypeComponent, {
-            width: '800px',
-            height: '900px',
-            data: {
-                selectedDocType: {
-                    key: document.documentTypeKey  ? document.documentTypeKey  : "",
-                },
-                formId: this.currentBatch.formId
-            }
-        });
-        dialogRef.afterClosed().subscribe((result: any) => {
-            if (result) {
-                document.documentTypeName = result.label;
-                document.documentTypeKey = result.key;
-            }
-        });
-    }
-
-    deleteDocument(documentIndex: number) {
-        this.deletedDocumentsIds.push(this.documents[documentIndex].id);
-        this.documents = this.deleteItemFromList(this.documents, documentIndex);
-    }
-    /* End documents control */
-
-    /* Begin tools bar */
-    deleteItemFromList(list: any[], index: number) {
-        delete list[index];
-        list = list.filter((x: any): x is any => x !== null);
-        return list;
-    }
-
-    deleteSelectedPages() {
-        for (const document of this.documents) {
-            for (let pageIndex = 0; pageIndex < document.pages.length; pageIndex++) {
-                if (document.pages[pageIndex].checkBox) {
-                    this.deletedPagesIds.push(document.pages[pageIndex].id);
-                    document.pages = this.deleteItemFromList(document.pages, pageIndex);
-                    pageIndex--;
+    getFormFieldsValues() {
+        for (const field of this.fieldsCategories['batch_metadata']) {
+            if ((this.batchForm.get(field.label_short) && !field.metadata_key) || this.inputMode != 'Auto') {
+                this.batchMetadataValues[field.label_short] = this.batchForm.get(field.label_short)?.value;
+                if (field.type === 'date') {
+                    this.batchMetadataValues[field.label_short] = moment(this.batchMetadataValues[field.label_short]).format('L');
                 }
             }
         }
     }
 
-    setAllPagesTo(check: boolean) {
-        for (const document of this.documents) {
-            for (const page of document.pages) {
-                page.checkBox = check;
+    toBatchFormGroup():FormGroup {
+        const group: any = {};
+        const format = moment().localeData().longDateFormat('L');
+        this.fieldsCategories['batch_metadata'].forEach((field: Field) => {
+            group[field.label_short] = field.required ?
+                new FormControl({value: '', disabled: field.disabled}, Validators.required) :
+                new FormControl({value: '', disabled: field.disabled});
+            if (this.currentBatch.customFieldsValues.hasOwnProperty(field.label_short)) {
+                const value = field.type !== 'date' ? this.currentBatch.customFieldsValues[field.label_short] :
+                    moment(this.currentBatch.customFieldsValues[field.label_short], format);
+                group[field.label_short].setValue(value);
+            }
+            if (field.metadata_key) {
+                group['search_' + field.label_short] = new FormControl('');
+            }
+        });
+        return new FormGroup(group);
+    }
+
+    downloadOriginalFile(): void {
+        this.downloadLoading = true;
+        this.http.get(environment['url'] + '/ws/splitter/batch/' + this.currentBatch.id + '/file',
+            {headers: this.authService.headers}).pipe(
+            tap((data: any) => {
+                const referenceFile = 'data:application/pdf;base64, ' + data['encodedFile'];
+                const link = document.createElement("a");
+                link.href = referenceFile;
+                link.download = data['filename'];
+                link.click();
+            }),
+            finalize(() => this.downloadLoading = false),
+            catchError((err: any) => {
+                this.downloadLoading = false;
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+    }
+
+    onCheckBoxChange(checkboxField: any, $event: MatCheckboxChange) {
+        for (const field of this.fieldsCategories['batch_metadata']) {
+            if (field['conditioned_fields'].includes(checkboxField['label_short'])) {
+                if ($event.checked) {
+                    this.batchForm.controls[field['label_short']].enable();
+                } else {
+                    this.batchForm.controls[field['label_short']].setValue("");
+                    this.batchForm.controls[field['label_short']].disable();
+                }
+            }
+            if (field['type'] === 'checkbox' && field['invert_fields'].includes(checkboxField['label_short'])) {
+                if ($event.checked) {
+                    this.batchForm.controls[field['label_short']].setValue(false);
+                }
+            }
+        }
+        this.updateProgressBar();
+    }
+
+    enableFieldsByDoctypeCondition() {
+        for (const field of this.fieldsCategories['batch_metadata']) {
+            if (field['conditioned_doctypes'].length > 0) {
+                let shouldDisable = true;
+                for (const document of this.documents) {
+                    if (field['conditioned_doctypes'].includes(document.doctypeKey)) {
+                        this.batchForm.controls[field['label_short']].enable();
+                        shouldDisable = false;
+                        break;
+                    }
+                }
+                if (shouldDisable) {
+                    this.batchForm.controls[field['label_short']].setValue("");
+                    this.batchForm.controls[field['label_short']].disable();
+                }
             }
         }
     }
 
-    undoAll() {
-        this.fieldsCategories['batch_metadata'] = [];
-        this.loadSelectedBatch();
-        this.loadMetadata();
+    getConfigurations() {
+        for (const config in this.configurations) {
+            this.http.get(environment['url'] + '/ws/config/getConfigurationNoAuth/' + config,
+                {headers: this.authService.headers}).pipe(
+                tap((data: any) => {
+                    this.configurations[config] = data.configuration[0].data.value;
+                }),
+                catchError((err: any) => {
+                    console.debug(err);
+                    this.notify.handleErrors(err);
+                    return of(false);
+                })
+            ).subscribe();
+        }
+    }
+    /* -- End Metadata -- */
+
+    /* -- Begin documents control -- */
+    addDocumentIdToDropList(id: string): string {
+        if (!this.DropListDocumentsIds.includes(id)) {
+            this.DropListDocumentsIds.push(id);
+        }
+        return id;
     }
 
-    sendSelectedPages() {
+    sanitize(url: string): any {
+        return this._sanitizer.sanitize(SecurityContext.URL, 'data:image/jpg;base64,' + url);
+    }
+
+    dropPage(event: CdkDragDrop<any[]>, document: any): void {
+        this.hasUnsavedChanges = true;
+        let pageId;
+        if (event.previousContainer === event.container) {
+            moveItemInArray(event.container.data, event.previousIndex, event.currentIndex);
+            pageId = event.container.data[event.currentIndex].id;
+        } else {
+            transferArrayItem(event.previousContainer.data,
+                event.container.data,
+                event.previousIndex,
+                event.currentIndex);
+            pageId = event.container.data[event.currentIndex].id;
+            this.movedPages.push({
+                'pageId'        : pageId,
+                'newDocumentId' : Number(document['id'].split('-')[1])
+            });
+        }
+        this.setPageSelection(pageId, false);
+    }
+
+    dropDocument(event: CdkDragDrop<string[]>): void {
+        this.hasUnsavedChanges = true;
+        moveItemInArray(this.documents, event.previousIndex, event.currentIndex);
+        this.OrderDisplayDocumentValues();
+    }
+
+    OrderDisplayDocumentValues(): void {
+        let cpt = 1;
+        for (const document of this.documents) {
+            document.displayOrder = cpt;
+            cpt++;
+        }
+    }
+
+    openDoctypeTree(document: any): void {
+        const dialogRef = this.dialog.open(DocumentTypeComponent, {
+            width   : '800px',
+            height  : '860px',
+            data    : {
+                allowImportExport : false,
+                allowUniqueDocType : false,
+                formId            : this.currentBatch.formId,
+                selectedDoctype   : {
+                    key     : document.doctypeKey  ? document.doctypeKey  : "",
+                    label   : document.doctypeLabel  ? document.doctypeLabel  : ""
+                }
+            }
+        });
+        dialogRef.afterClosed().subscribe((result: any) => {
+            if (result) {
+                document.doctypeLabel   = result.label;
+                document.doctypeKey     = result.key;
+                this.hasUnsavedChanges  = true;
+                this.enableFieldsByDoctypeCondition();
+            }
+        });
+    }
+
+    selectDocument(document: any): void {
+        this.currentBatch.selectedDocument = {'id': document.id, 'displayOrder': document.displayOrder};
+    }
+
+    deleteDocument(documentIndex: number): void {
+        const pagesCount = this.documents[documentIndex].pages.length;
+        const confirmMessage = pagesCount > 0 ?
+            this.translate.instant('SPLITTER.confirm_delete_document_not_empty', {"pagesCount": pagesCount}) :
+            this.translate.instant('SPLITTER.confirm_delete_document_empty');
+
+        const dialogRef = this.dialog.open(ConfirmDialogComponent, {
+            data:{
+                confirmTitle       : this.translate.instant('GLOBAL.confirm'),
+                confirmText        : confirmMessage,
+                confirmButton      : this.translate.instant('GLOBAL.delete'),
+                confirmButtonColor : "warn",
+                cancelButton       : this.translate.instant('GLOBAL.cancel')
+            },
+            width: "600px"
+        });
+
+        dialogRef.afterClosed().subscribe(result => {
+            if (result) {
+                this.deletedDocumentsIds.push(this.documents[documentIndex].id);
+                this.documents = this.deleteItemFromList(this.documents, documentIndex);
+                this.hasUnsavedChanges = true;
+                this.saveModifications();
+            }
+        });
+    }
+
+    onBatchDrop(batchIdToMerge: number) {
+        this.isBatchOnDrag = false;
+        if (!this.isMouseInDocumentList) {
+            return;
+        }
+        if (this.isMouseInDocumentList && this.currentBatch.id === batchIdToMerge) {
+            this.notify.error(this.translate.instant('SPLITTER.can_not_merge_same_batch'));
+            return;
+        }
+        const dialogRef = this.dialog.open(ConfirmDialogComponent, {
+            data: {
+                confirmButtonColor  : "green",
+                cancelButton        : this.translate.instant('GLOBAL.cancel'),
+                confirmTitle        : this.translate.instant('GLOBAL.confirm'),
+                confirmButton       : this.translate.instant('SPLITTER.merge'),
+                confirmText         : this.translate.instant('SPLITTER.confirm_merge_batches')
+            },
+            width: "600px"
+        });
+
+        dialogRef.afterClosed().subscribe(result => {
+            if (result) {
+                this.mergeBatches(batchIdToMerge);
+            }
+        });
+    }
+
+    mergeBatches(batchIdToMerge: number) {
+        this.http.post(environment['url'] + '/ws/splitter/merge/' + this.currentBatch.id, {'batches': [batchIdToMerge]}, {headers: this.authService.headers},
+        ).pipe(
+            tap(() => {
+                this.loadSelectedBatch();
+                this.notify.success(this.translate.instant('SPLITTER.merge_success'));
+            }),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+    }
+
+    dropBatch(event: CdkDragDrop<string[]>) {
+        moveItemInArray(this.batches, event.previousIndex, event.currentIndex);
+    }
+
+    updateProgressBar() {
+        if (!this.configurations['enableSplitterProgressBar']) {
+            return;
+        }
+
+        this.currentBatch.progress = 100;
+        let batchFieldsCount = Object.keys(this.batchForm.controls).length;
+        for (const key of Object.keys(this.batchForm.controls)) {
+            if (this.batchForm.controls[key].disabled) {
+                batchFieldsCount = batchFieldsCount - 1;
+                if (batchFieldsCount <= 0) {
+                    return;
+                }
+            }
+        }
+
+        for (const key of Object.keys(this.batchForm.controls)) {
+            if (!this.batchForm.controls[key].value && !this.batchForm.controls[key].disabled) {
+                this.currentBatch.progress = this.currentBatch.progress - (100 /  batchFieldsCount);
+            }
+        }
+    }
+    /* -- End documents control -- */
+
+    /* -- Begin toolbar -- */
+    deleteItemFromList(list: any[], index: number): any[] {
+        delete list[index];
+        list = list.filter((x: any): x is any => x !== null);
+        return list;
+    }
+
+    selectPage(page: any) {
+        page['checkBox'] = !page['checkBox'];
+        this.countSelectedPages();
+    }
+
+    countSelectedPages(): void {
+        let selectedPageCount = 0;
+        for (const document of this.documents) {
+            for (const page of document.pages) {
+                if (page.checkBox) {
+                    selectedPageCount++;
+                }
+            }
+        }
+        this.currentBatch.selectedPagesCount = selectedPageCount;
+    }
+
+    deleteSelectedPages(): void {
+        if (this.currentBatch.selectedPagesCount === 0) {
+            return;
+        }
+
+        const dialogRef = this.dialog.open(ConfirmDialogComponent, {
+            data:{
+                confirmTitle       : this.translate.instant('GLOBAL.confirm'),
+                confirmText        : this.translate.instant('SPLITTER.confirm_delete_pages', {"pagesCount": this.currentBatch.selectedPagesCount}),
+                confirmButton      : this.translate.instant('GLOBAL.delete'),
+                confirmButtonColor : "warn",
+                cancelButton       : this.translate.instant('GLOBAL.cancel')
+            },
+            width: "600px"
+        });
+
+        dialogRef.afterClosed().subscribe(result => {
+            if (result) {
+                for (const document of this.documents) {
+                    for (let pageIndex = 0; pageIndex < document.pages.length; pageIndex++) {
+                        if (document.pages[pageIndex].checkBox) {
+                            this.deletedPagesIds.push(document.pages[pageIndex].id);
+                            document.pages = this.deleteItemFromList(document.pages, pageIndex);
+                            pageIndex--;
+                        }
+                    }
+                }
+                this.hasUnsavedChanges = true;
+            }
+        });
+    }
+
+    setPageSelection(pageId: number, check: boolean): void {
+        for (const document of this.documents) {
+            for (const page of document.pages) {
+                if (page.id === pageId) {
+                    page.checkBox = check;
+                }
+            }
+        }
+        this.countSelectedPages();
+    }
+
+    setAllPagesTo(check: boolean): void {
+        for (const document of this.documents) {
+            for (const page of document.pages) {
+                this.setPageSelection(page.id, check);
+            }
+        }
+    }
+
+    rotatePage(documentIndex: number, pageIndex: number): void {
+        const currentDegree = this.documents[documentIndex].pages[pageIndex].rotation;
+        this.hasUnsavedChanges = true;
+        switch (currentDegree) {
+            case -90: {
+                this.documents[documentIndex].pages[pageIndex].rotation = 0;
+                break;
+            }
+            case 180: {
+                this.documents[documentIndex].pages[pageIndex].rotation = -90;
+                break;
+            }
+            default: {
+                this.documents[documentIndex].pages[pageIndex].rotation += 90;
+                break;
+            }
+        }
+
+        if (this.zoomPage.pageId === this.documents[documentIndex].pages[pageIndex].id) {
+            this.zoomPage.rotation = this.documents[documentIndex].pages[pageIndex].rotation;
+        }
+    }
+
+    rotateSelectedPages(): void {
+        for (let documentIndex = 0; documentIndex < this.documents.length; documentIndex++) {
+            for (let pageIndex = 0; pageIndex < this.documents[documentIndex].pages.length; pageIndex++) {
+                if (this.documents[documentIndex].pages[pageIndex].checkBox) {
+                    this.rotatePage(documentIndex, pageIndex);
+                }
+            }
+        }
+    }
+
+    sendSelectedPages(): void {
         const selectedDoc = this.documents.filter((doc: any) => doc.id === this.toolSelectedOption);
         if (!selectedDoc) {
             return;
         }
         const selectedDocIndex = this.documents.indexOf(selectedDoc[0]);
         for (const document of this.documents) {
-            for (let i = document.pages.length - 1; i >= 0; i--) {
-                if (document.pages[i].checkBox) {
+            for (let pageIndex = 0; pageIndex < document.pages.length; pageIndex++) {
+                if (document.pages[pageIndex].checkBox) {
                     const newPosition = this.documents[selectedDocIndex].pages.length;
-                    transferArrayItem(document.pages,
-                        this.documents[selectedDocIndex].pages, i,
-                        newPosition);
+                    transferArrayItem(document.pages, this.documents[selectedDocIndex].pages, pageIndex, newPosition);
+                    pageIndex = pageIndex - 1;
+                    const pageId = this.documents[selectedDocIndex].pages[newPosition].id;
                     this.movedPages.push({
-                        'pageId'        : this.documents[selectedDocIndex].pages[newPosition].id,
-                        'newDocumentId' : Number(this.documents[selectedDocIndex].id.split('-')[1]),
-                        'isAddInNewDoc' : (this.documents[selectedDocIndex].status === 'USERADD')
+                        'pageId'        : pageId,
+                        'newDocumentId' : Number(this.documents[selectedDocIndex].id.split('-')[1])
                     });
+                    this.setPageSelection(pageId, false);
                 }
             }
         }
+        this.hasUnsavedChanges = true;
     }
 
-    changeBatch(id: number) {
-        this.loading                            = true;
+    changeBatch(id: number): void {
+        this.loading = true;
+        this.batchMetadataValues = {};
         this.fieldsCategories['batch_metadata'] = [];
-        this.batchMetadataValues                = {};
         this.fillDataValues({});
-        this.router.navigate(['splitter/viewer/' + id]).then();
+        this.router.navigate(['splitter/viewer/' + this.currentTime + '/' + id]).then();
         this.currentBatch.id = id;
         this.loadSelectedBatch();
+        this.hasUnsavedChanges = false;
     }
 
-    validate() {
-        this.loading = true;
-        if (this.inputMode === 'Manual') {
-            for (const field of this.fieldsCategories['batch_metadata']) {
-                if (this.batchForm.get(field.label_short)) {
-                    this.batchMetadataValues[field.label_short] = this.batchForm.get(field.label_short)?.value;
+    cancelBatchModification(): void {
+        if (this.hasUnsavedChanges) {
+            const dialogRef = this.dialog.open(ConfirmDialogComponent, {
+                data:{
+                    confirmTitle       : this.translate.instant('GLOBAL.confirm'),
+                    confirmText        : this.translate.instant('SPLITTER.quit_without_saving_modifications'),
+                    confirmButton      : this.translate.instant('SPLITTER.quit_without_saving'),
+                    confirmButtonColor : "warn",
+                    cancelButton       : this.translate.instant('GLOBAL.cancel')
+                },
+                width: "600px"
+            });
+
+            dialogRef.afterClosed().subscribe(result => {
+                if (result) {
+                    this.router.navigate(["/splitter/list"]).then();
                 }
-            }
+            });
         }
-        for (let documentIndex = 0; documentIndex < this.documents.length; documentIndex++) {
-            this.documents[documentIndex]['metadata'] = this.documentsForms[documentIndex].getRawValue();
+        else {
+            this.router.navigate(["/splitter/list"]).then();
         }
+    }
+
+    validateWithConfirmation(): void {
+        const doctypeKeys = new Set<string>();
+        const selectedForm = this.forms.find( form => form.id === this.currentBatch.formId );
 
         for (const document of this.documents) {
-            if (!document.documentTypeKey) {
+            if (doctypeKeys.has(document.doctypeKey) && selectedForm.settings.unique_doc_type) {
+                this.notify.error(this.translate.instant('SPLITTER.error_duplicate_doctype'));
+                this.loading = false;
+                return;
+            }
+            else {
+                doctypeKeys.add(document.doctypeKey);
+            }
+        }
+
+        if (!this.batchForm.valid && this.inputMode === "Manual") {
+            this.notify.error(this.translate.instant('SPLITTER.error_empty_document_metadata'));
+            this.loading = false;
+            return;
+        }
+        if (this.inputMode === 'Auto' && !this.batchMetadataValues.metadataId && this.fieldsCategories['batch_metadata'].length !== 0) {
+            this.notify.error(this.translate.instant('SPLITTER.error_autocomplete_value'));
+            return;
+        }
+        for (const document of this.documents) {
+            if (!document.form.valid) {
+                this.notify.error(this.translate.instant('SPLITTER.error_empty_document_metadata'));
+                this.loading = false;
+                return;
+            }
+            if (!document.doctypeKey) {
                 document.class = "text-red-500";
                 this.notify.error(this.translate.instant('SPLITTER.error_no_doc_type'));
                 this.loading = false;
                 return;
-            } else
+            } else {
                 document.class = "";
+            }
         }
+        this.getFormFieldsValues();
+
+        for (const field of this.fieldsCategories['batch_metadata']) {
+            if (field.validationMask) {
+                if (!this.batchMetadataValues[field.label_short].match(field.validationMask)) {
+                    this.notify.error(this.translate.instant('SPLITTER.field_form_not_respected', {'field': field.label}));
+                    this.loading = false;
+                    return;
+                }
+            }
+        }
+
+        for (const field of this.fieldsCategories['document_metadata']) {
+            if (field.validationMask) {
+                const regex = new RegExp(field.validationMask);
+                for (const document of this.documents) {
+                    if (!document.form.get(field.label_short)?.value.match(regex)) {
+                        this.notify.error(this.translate.instant('SPLITTER.field_form_not_respected', {'field': field.label}));
+                        this.loading = false;
+                        return;
+                    }
+                }
+            }
+        }
+
+        const dialogRef = this.dialog.open(ConfirmDialogComponent, {
+            data:{
+                confirmTitle       : this.translate.instant('GLOBAL.confirm'),
+                confirmText        : this.translate.instant('SPLITTER.confirm_validate'),
+                confirmButton      : this.translate.instant('SPLITTER.validate_batch'),
+                confirmButtonColor : "green",
+                cancelButton       : this.translate.instant('GLOBAL.cancel')
+            },
+            width: "600px"
+        });
+
+        dialogRef.afterClosed().subscribe(result => {
+            if (result) {
+                this.validate();
+            }
+        });
+    }
+
+    validate(): void {
+        this.validateLoading = true;
+        this.notify.success(this.translate.instant('SPLITTER.batch_validate_processing'), 60000);
 
         const batchMetadata             = this.batchMetadataValues;
         batchMetadata['id']             = this.currentBatch.id;
         batchMetadata['userName']       = this.userService.user['username'];
-        batchMetadata['userFirstName']  = this.userService.user['firstname'];
         batchMetadata['userLastName']   = this.userService.user['lastname'];
-        this.loading = true;
-        this.http.post(API_URL + '/ws/splitter/validate',
+        batchMetadata['userFirstName']  = this.userService.user['firstname'];
+
+        // Build documents metadata arguments
+        const _documents: any[] = [];
+        for (const document of this.documents) {
+            const _document: any = {
+                id            : document['id'],
+                displayOrder  : document['displayOrder'],
+                doctypeKey    : document['doctypeKey'],
+                doctypeLabel  : document['doctypeLabel'],
+                metadata      : document.form.getRawValue(),
+                pages         : []
+            };
+            for (const page of document.pages) {
+                _document.pages.push({
+                    id         : page['id'],
+                    rotation   : page['rotation'],
+                    sourcePage : page['sourcePage']
+                });
+            }
+            _documents.push(_document);
+        }
+        this.http.post(environment['url'] + '/ws/splitter/export',
             {
-                'formId'                : this.currentBatch.formId,
-                'batchId'               : this.currentBatch.id,
-                'documents'             : this.documents,
-                'movedPages'            : this.movedPages,
-                'deletedPagesIds'       : this.deletedPagesIds,
-                'deletedDocumentsIds'   : this.deletedDocumentsIds,
-                'batchMetadata'         : batchMetadata,
+                'documents'           : _documents,
+                'batchMetadata'       : batchMetadata,
+                'movedPages'          : this.movedPages,
+                'batchId'             : this.currentBatch.id,
+                'deletedPagesIds'     : this.deletedPagesIds,
+                'deletedDocumentsIds' : this.deletedDocumentsIds,
+                'formId'              : this.currentBatch.formId
             },
             {headers: this.authService.headers}).pipe(
             tap(() => {
+                this.translate.get('HISTORY-DESC.validate_splitter', {batch_id: this.currentBatch.id}).subscribe((translated: string) => {
+                    this.historyService.addHistory('splitter', 'viewer', translated);
+                });
+                this.notify.clear();
+                this.notify.success(this.translate.instant('SPLITTER.validate_batch_success'));
                 this.router.navigate(['splitter/list']).then();
-                this.notify.success(this.translate.instant('SPLITTER.validate_batch'));
-                this.loading = true;
             }),
             catchError((err: any) => {
-                this.loading = false;
-                this.notify.error(err.message);
+                this.validateLoading = false;
+                this.notify.clear();
+                this.notify.handleErrors(err);
                 console.debug(err);
                 return of(false);
             })
         ).subscribe();
     }
 
-    saveInfo() {
-        if (this.inputMode === 'Manual') {
-            for (const field of this.fieldsCategories['batch_metadata']) {
-                if (this.batchForm.get(field.label_short)) {
-                    this.batchMetadataValues[field.label_short] = this.batchForm.get(field.label_short)?.value;
-                }
-            }
+    saveModifications(refreshPage: boolean = false): void {
+        this.saveInfosLoading = true;
+        this.getFormFieldsValues();
+
+        const _documents = [];
+        for (const document of this.documents) {
+            const _document       = Object.assign({}, document);
+            _document['metadata'] = document.form.getRawValue();
+            delete _document.class;
+            delete _document.form;
+            _documents.push(_document);
         }
-        for (let documentIndex = 0; documentIndex < this.documents.length; documentIndex++) {
-            this.documents[documentIndex]['metadata'] = this.documentsForms[documentIndex].getRawValue();
-        }
-        this.http.post(API_URL + '/ws/splitter/saveInfo',
+
+        this.http.post(environment['url'] + '/ws/splitter/saveModifications',
             {
-                'documents'             : this.documents,
-                'batchId'               : this.currentBatch.id,
-                'batchMetadata'         : this.batchMetadataValues,
-                'deletedPagesIds'       : this.deletedPagesIds,
-                'deletedDocumentsIds'   : this.deletedDocumentsIds,
-                'movedPages'            : this.movedPages,
+                'documents'           : _documents,
+                'movedPages'          : this.movedPages,
+                'batchId'             : this.currentBatch.id,
+                'deletedPagesIds'     : this.deletedPagesIds,
+                'deletedDocumentsIds' : this.deletedDocumentsIds,
+                'batchMetadata'       : this.batchMetadataValues
             },
             {headers: this.authService.headers}).pipe(
             tap(() => {
-                this.notify.success(this.translate.instant('SPLITTER.batch_info_saved'));
+                this.saveInfosLoading   = false;
+                this.hasUnsavedChanges  = false;
+                this.notify.success(this.translate.instant('SPLITTER.batch_modification_saved'));
+                if (refreshPage) {
+                    this.ngOnInit().then();
+                }
             }),
             catchError((err: any) => {
-                this.loading = false;
-                this.notify.error(err.error.message);
+                this.saveInfosLoading = false;
+                this.notify.handleErrors(err);
                 console.debug(err);
                 return of(false);
             })
         ).subscribe();
     }
-    /* -- End tools bar -- */
+
+    getOutputsLabels(): string {
+        const outputsLabels = [];
+        for (const output of this.currentBatch.outputs) {
+            outputsLabels.push(output.label);
+        }
+        return outputsLabels.join(', ');
+    }
+    /* -- End toolbar -- */
+
+    removeLockByBatchId() {
+        if (this.currentBatch.id) {
+            this.http.put(environment['url'] + '/ws/splitter/removeLockByBatchId',
+                {'batch_id': this.currentBatch.id},
+                {headers: this.authService.headers}).pipe(
+                catchError((err: any) => {
+                    console.debug(err);
+                    this.notify.handleErrors(err);
+                    return of(false);
+                })
+            ).subscribe();
+        }
+    }
+
+    checkConditional(field_id: any, option: any) {
+        let _return = true;
+        this.customFields.forEach((customField: any) => {
+            if ('conditional' in customField.settings && customField.settings.conditional) {
+                if (customField.id === parseInt(field_id.replace('custom_', ''))) {
+                    customField.settings.options.forEach((customFieldOption: any) => {
+                        if (customFieldOption.id === option.id) {
+                            const conditionalCustomId = customFieldOption.conditional_custom_field;
+                            const conditionalCustomValue = this.getFieldValue(conditionalCustomId);
+                            if (conditionalCustomValue) {
+                                _return = conditionalCustomValue === customFieldOption.conditional_custom_value;
+                            }
+                        }
+                    });
+                }
+            }
+        });
+        return _return;
+    }
+
+    getFieldValue(field_id: any) {
+        let _value = '';
+        this.fieldsCategories['batch_metadata'].forEach((field: any) => {
+            if (parseInt(field.id.replace('custom_', '')) === field_id) {
+                if (this.batchMetadataValues[field.label_short]) {
+                    _value = this.batchMetadataValues[field.label_short];
+                }
+            }
+        });
+        return _value;
+    }
+
+    setDocumentPrincipal(documentIndex: number): void {
+        const dialogRef = this.dialog.open(ConfirmDialogComponent, {
+            data:{
+                confirmTitle       : this.translate.instant('GLOBAL.confirm'),
+                confirmText        : this.translate.instant('SPLITTER.confirm_set_document_principal'),
+                confirmButton      : this.translate.instant('FORMS.validate'),
+                confirmButtonColor : "warn",
+                cancelButton       : this.translate.instant('GLOBAL.cancel')
+            },
+            width: "650px"
+        });
+
+        dialogRef.afterClosed().subscribe(result => {
+            if (result) {
+                this.loading = true;
+                if (this.documents[documentIndex]) {
+                    let documentsToMove: any = [];
+                    this.documents.forEach((document: any, index: number) => {
+                        const documentId = parseInt(document.id.replace('document-', ''));
+                        if (documentIndex !== index) {
+                            documentsToMove.push({'id': documentId, 'index': index});
+                        }
+                    });
+
+                    if (documentsToMove) {
+                        this.http.post(environment['url'] + '/ws/splitter/moveDocumentsToAttachments/' + this.currentBatch.id, {'documents': documentsToMove},
+                            {headers: this.authService.headers}).pipe(
+                            tap(() => {
+                                documentsToMove.forEach((document: any) => {
+                                    this.hasUnsavedChanges = true;
+                                    this.deletedDocumentsIds.push(this.documents[document['index']].id);
+                                });
+                                this.loading = false;
+                                this.saveModifications(true);
+                            }),
+                            catchError((err: any) => {
+                                this.loading = false;
+                                console.debug(err);
+                                this.notify.handleErrors(err);
+                                return of(false);
+                            })
+                        ).subscribe();
+                    }
+                }
+            }
+        });
+    }
+
+    toggleSidenav() {
+        this.sidenavOpened = !this.sidenavOpened;
+    }
+
+    onAttachmentsLengthChange(event: any) {
+        this.attachmentsLength = event;
+    }
 }

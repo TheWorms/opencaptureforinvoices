@@ -1,3 +1,5 @@
-<app-menu [image]="this.image" *ngIf="this.location.path() !== '/login' && this.location.path() !== '/404' && loading === this.loading"></app-menu>
+@if (this.showMenu && !this.loading) {
+    <app-menu [image]="this.image" [imageMobile]="this.imageMobile"></app-menu>
+}
 
 <router-outlet></router-outlet>

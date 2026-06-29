@@ -1,0 +1,26 @@
+@reference "tailwindcss";
+@config "../../../../../../tailwind.config.js";
+
+.mat-column-id {
+    flex: 0 0 8%;
+}
+
+.mat-column-label {
+    flex: 0 0 10%;
+}
+
+::ng-deep .mat-column-content {
+    flex: 0 0 75%;
+    & .mat-mdc-text-field-wrapper {
+        @apply h-8;
+        @apply pl-2;
+        @apply top-3;
+        & .mat-mdc-form-field-infix {
+            @apply text-sm;
+        }
+    }
+}
+
+.mat-column-actions {
+    flex: 0 0 5%;
+}

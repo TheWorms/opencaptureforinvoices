@@ -1,14 +1,19 @@
 {
     "name"                : "Nom Fournisseur",
-    "VATNumber"           : "TVA INTRA",
-    "SIRET"               : "SIRET",
-    "SIREN"               : "SIREN",
-    "IBAN"                : "IBAN",
+    "vat_number"          : "TVA INTRA",
+    "siret"               : "SIRET",
+    "siren"               : "SIREN",
+    "duns"                : "DUNS",
+    "bic"                 : "BIC",
+    "rccm"                : "RCCM",
+    "iban"                : "IBAN",
+    "email"               : "EMAIL",
     "address1"            : "Adresse 1",
     "address2"            : "Adresse 2",
-    "addressTown"         : "VILLE",
-    "addressPostalCode"   : "CP",
-    "addressCountry"      : "PAYS",
-    "positions_mask_id"   : "MASQUE DE POSITIONNEMENT",
-    "get_only_raw_footer" : "CONTROLE DE COHERENCE"
+    "city"                : "VILLE",
+    "postal_code"         : "CP",
+    "country"             : "PAYS",
+    "get_only_raw_footer" : "CONTROLE DE COHERENCE",
+    "lang"                : "LANGUE DES DOCUMENTS",
+    "default_currency"    : "DEVISE PAR DEFAUT"
 }

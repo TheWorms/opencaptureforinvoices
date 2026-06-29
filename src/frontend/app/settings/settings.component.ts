@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
- Open-Capture for Invoices is free software: you can redistribute it and/or modify
+ Open-Capture is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
  the Free Software Foundation, either version 3 of the License, or
  (at your option) any later version.
@@ -11,23 +11,23 @@
  GNU General Public License for more details.
 
  You should have received a copy of the GNU General Public License
- along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+ along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
  @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
 
-import {Component, OnInit} from '@angular/core';
-import {Router} from "@angular/router";
-import {UserService} from "../../services/user.service";
-import {SettingsService} from "../../services/settings.service";
-import {PrivilegesService} from "../../services/privileges.service";
+import { Component, OnInit } from '@angular/core';
+import { Router } from "@angular/router";
+import { UserService } from "../../services/user.service";
+import { SettingsService } from "../../services/settings.service";
+import { PrivilegesService } from "../../services/privileges.service";
 
 @Component({
-    selector: 'app-panel',
-    templateUrl: "settings.component.html"
+    selector: 'app-settings',
+    templateUrl: "settings.component.html",
+    standalone: false
 })
 
 export class SettingsComponent implements OnInit {
-    isMenuOpen              : boolean   = this.serviceSettings.getIsMenuOpen();
     selectedSetting         : string    = this.serviceSettings.getSelectedSetting();
     selectedParentSetting   : string    = this.serviceSettings.getSelectedParentSetting();
     settings                : any       = this.serviceSettings.getSettings();
@@ -49,16 +49,14 @@ export class SettingsComponent implements OnInit {
             if (element['id'] === this.selectedSetting) {
                 settingsFound = true;
                 const routeToGo = element.route;
-                if (routeToGo && this.privilegesService.hasPrivilege(element.privilege))
+                if (routeToGo && this.privilegesService.hasPrivilege(element.privilege)) {
                     this.router.navigateByUrl(routeToGo).then();
+                }
             }
         });
 
-        if (!settingsFound)
+        if (!settingsFound) {
             this.router.navigateByUrl('/settings/general/configurations').then();
-    }
-
-    toggleMenu() {
-        this.isMenuOpen = !this.isMenuOpen;
+        }
     }
 }

@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
- Open-Capture for Invoices is free software: you can redistribute it and/or modify
+ Open-Capture is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
  the Free Software Foundation, either version 3 of the License, or
  (at your option) any later version.
@@ -11,50 +11,46 @@
  GNU General Public License for more details.
 
  You should have received a copy of the GNU General Public License
- along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+ along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
  @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
 
-import {Component, OnInit} from '@angular/core';
-import { LocalStorageService } from "../../../services/local-storage.service";
-import { API_URL } from "../../env";
+import { Component, OnInit, SecurityContext } from '@angular/core';
+import { SessionStorageService } from "../../../services/session-storage.service";
+import { environment } from  "../../env";
 import { catchError, finalize, tap } from "rxjs/operators";
 import { of } from "rxjs";
 import { NotificationService } from "../../../services/notifications/notifications.service";
 import { HttpClient } from "@angular/common/http";
 import { AuthService } from "../../../services/auth.service";
-import { TranslateService } from "@ngx-translate/core";
-import { marker } from "@biesbjerg/ngx-translate-extract-marker";
-import { LastUrlService } from "../../../services/last-url.service";
+import { _, TranslateService } from "@ngx-translate/core";
 import { MAT_FORM_FIELD_DEFAULT_OPTIONS } from "@angular/material/form-field";
 import { FlatTreeControl } from "@angular/cdk/tree";
 import { MatTreeFlatDataSource, MatTreeFlattener } from "@angular/material/tree";
 import { UserService } from "../../../services/user.service";
-import {ConfirmDialogComponent} from "../../../services/confirm-dialog/confirm-dialog.component";
-import {MatDialog} from "@angular/material/dialog";
-import {DomSanitizer} from "@angular/platform-browser";
-import {ConfigService} from "../../../services/config.service";
-import {HistoryService} from "../../../services/history.service";
-declare const $: any;
+import { ConfirmDialogComponent } from "../../../services/confirm-dialog/confirm-dialog.component";
+import { MatDialog } from "@angular/material/dialog";
+import { DomSanitizer } from "@angular/platform-browser";
+import { FormControl } from "@angular/forms";
 
-interface accountsNode {
+interface AccountsNode {
     name: string
     id: number
     parent_id: any
     supplier_id: any
-    purchase_or_sale: any
+    form_id: any
     count: number
     display: boolean
     children: any
 }
 
-interface flatNode {
+interface FlatNode {
     expandable: boolean
     name: string
     id: number
     parent_id: any
     supplier_id: any
-    purchase_or_sale: any
+    form_id: any
     display: boolean
     count: number
     level: number
@@ -66,65 +62,82 @@ interface flatNode {
     templateUrl: './verifier-list.component.html',
     styleUrls: ['./verifier-list.component.scss'],
     providers: [
-        { provide: MAT_FORM_FIELD_DEFAULT_OPTIONS, useValue: { appearance: 'fill' } },
-    ]
+        { provide: MAT_FORM_FIELD_DEFAULT_OPTIONS, useValue: { appearance: 'fill' } }
+    ],
+    standalone: false
 })
 export class VerifierListComponent implements OnInit {
-    loading         : boolean           = true;
-    status          : any[]             = [];
-    config          : any;
-    currentStatus   : string            = 'NEW';
-    currentTime     : string            = 'today';
-    batchList       : any[]             = [
+    config                   : any;
+    currentForm              : any            = '';
+    search                   : string         = '';
+    documentListThumb        : string         = '';
+    currentFilter            : string         = 'documents.id';
+    currentOrder             : string         = 'desc';
+    documents                : any            = [];
+    filteredForms            : any            = [];
+    status                   : any            = [];
+    allowedCustomers         : any[]          = [];
+    allowedSuppliers         : any[]          = [];
+    TREE_DATA                : AccountsNode[] = [];
+    loading                  : boolean        = true;
+    loadingCustomers         : boolean        = true;
+    currentStatus            : string         = 'NEW';
+    displayMode              : string         = 'grid';
+    currentTime              : string         = 'today';
+    forms                    : any            = [
+        {'id' : '', "label": this.translate.instant('VERIFIER.all_forms')},
+        {'id' : 'no_form', "label": this.translate.instant('VERIFIER.no_form')}
+    ];
+    batchList                : any            = [
         {
             'id': 'today',
-            'label': marker('BATCH.today'),
+            'label': _('BATCH.today')
         },
         {
             'id': 'yesterday',
-            'label': marker('BATCH.yesterday'),
+            'label': _('BATCH.yesterday')
         },
         {
             'id': 'older',
-            'label': marker('BATCH.older'),
+            'label': _('BATCH.older')
         }
     ];
-    pageSize        : number            = 16;
-    pageIndex       : number            = 0;
-    pageSizeOptions : any []            = [4, 8, 12, 16, 24, 48];
-    total           : number            = 0;
-    totals          : any               = {};
-    offset          : number            = 0;
-    selectedTab     : number            = 0;
-    invoices        : any []            = [];
-    allowedCustomers: any []            = [];
-    allowedSuppliers: any []            = [];
-    purchaseOrSale  : string            = '';
-    search          : string            = '';
-    TREE_DATA       : accountsNode[]    = [];
-    expanded        : boolean           = false;
-    invoiceToDeleteSelected : boolean   = false;
-    totalChecked    : number            = 0;
+    pageSize                 : number         = 16;
+    pageIndex                : number         = 0;
+    pageSizeOptions          : any []         = [4, 8, 12, 16, 24, 48];
+    total                    : number         = 0;
+    offset                   : number         = 0;
+    selectedTab              : number         = 0;
+    totalChecked             : number         = 0;
+    totals                   : any            = {};
+    customersList            : any            = {};
+    enableAttachments        : boolean        = false;
+    searchLoading            : boolean        = false;
+    expanded                 : boolean        = false;
+    documentToDeleteSelected : boolean        = false;
+    customerFilterEmpty      : boolean        = false;
+    customerFilterEnabled    : boolean        = false;
+    customerFilter           : FormControl    = new FormControl('');
+    filtersLists             : any            = [
+        {'id': 'documents.id', 'label': 'HEADER.technical_id'},
+        {'id': 'documents.register_date', 'label': _('FACTURATION.register_date_short')}
+    ];
 
-    private _transformer = (node: accountsNode, level: number) => ({
+    private _transformer = (node: AccountsNode, level: number) => ({
         expandable: !!node.children && node.children.length > 0,
         name: node.name,
         supplier_id: node.supplier_id,
         id: node.id,
         parent_id: node.parent_id,
-        purchase_or_sale: node.purchase_or_sale,
+        form_id: node.form_id,
         display: node.display,
         count: node.count,
         level: level,
         children: node.children
     });
 
-    treeControl = new FlatTreeControl<flatNode>(
-        node => node.level, node => node.expandable);
-
-    treeFlattener = new MatTreeFlattener(
-        this._transformer, node => node.level, node => node.expandable, node => node.children);
-
+    treeControl = new FlatTreeControl<FlatNode>(node => node.level, node => node.expandable);
+    treeFlattener = new MatTreeFlattener(this._transformer, node => node.level, node => node.expandable, node => node.children);
     dataSource = new MatTreeFlatDataSource(this.treeControl, this.treeFlattener);
 
     constructor(
@@ -135,41 +148,88 @@ export class VerifierListComponent implements OnInit {
         private userService: UserService,
         public translate: TranslateService,
         private notify: NotificationService,
-        private configService: ConfigService,
-        private historyService: HistoryService,
-        private routerExtService: LastUrlService,
-        private localeStorageService: LocalStorageService
+        private sessionStorageService: SessionStorageService
     ) {}
 
-    hasChild = (_: number, node: flatNode) => node.expandable;
-    isLevelOne = (_: number, node: flatNode) => node.level === 1;
-    isLevelTwo = (_: number, node: flatNode) => node.level === 2;
-    isNotLevelOne = (_: number, node: flatNode) => node.level !== 1;
+    hasChild = (_: number, node: FlatNode) => node.expandable;
+    isLevelOne = (_: number, node: FlatNode) => node.level === 1;
+    isLevelTwo = (_: number, node: FlatNode) => node.level === 2;
+    isNotLevelOne = (_: number, node: FlatNode) => node.level !== 1;
 
     async ngOnInit() {
-        marker('VERIFIER.nb_pages'); // Needed to get the translation in the JSON file
-        marker('VERIFIER.expand_all'); // Needed to get the translation in the JSON file
-        marker('VERIFIER.collapse_all'); // Needed to get the translation in the JSON file
-        marker('VERIFIER.select_all'); // Needed to get the translation in the JSON file
-        marker('VERIFIER.unselect_all'); // Needed to get the translation in the JSON file
-        this.config = this.configService.getConfig();
-        this.localeStorageService.save('splitter_or_verifier', 'verifier');
-        this.removeLockByUserId(this.userService.user.username);
-        const lastUrl = this.routerExtService.getPreviousUrl();
-        if (lastUrl.includes('verifier/') && !lastUrl.includes('settings') || lastUrl === '/' || lastUrl === '/upload') {
-            if (this.localeStorageService.get('invoicesPageIndex'))
-                this.pageIndex = parseInt(this.localeStorageService.get('invoicesPageIndex') as string);
-            if (this.localeStorageService.get('invoicesTimeIndex')) {
-                this.selectedTab = parseInt(this.localeStorageService.get('invoicesTimeIndex') as string);
-                this.currentTime = this.batchList[this.selectedTab].id;
-            }
-            this.offset = this.pageSize * (this.pageIndex);
-        } else {
-            this.localeStorageService.remove('invoicesPageIndex');
-            this.localeStorageService.remove('invoicesTimeIndex');
+        if (!this.authService.headersExists) {
+            this.authService.generateHeaders();
         }
 
-        this.http.get(API_URL + '/ws/status/list?module=verifier', {headers: this.authService.headers}).pipe(
+        if (!this.userService.user.id) {
+            this.userService.user = this.userService.getUserFromLocal();
+        }
+
+        if (localStorage.getItem('verifierListDisplayMode')) {
+            this.displayMode = localStorage.getItem('verifierListDisplayMode') as string;
+        }
+        if (localStorage.getItem('verifierFilter')) {
+            this.currentFilter = localStorage.getItem('verifierFilter') as string;
+        }
+        if (localStorage.getItem('verifierOrder')) {
+            this.currentOrder = localStorage.getItem('verifierOrder') as string;
+        }
+        if (this.sessionStorageService.get('statusFormSelected')) {
+            this.currentStatus = this.sessionStorageService.get('statusFormSelected') as string;
+        }
+        if (this.sessionStorageService.get('documentsFormSelected')) {
+            this.currentForm = parseInt(this.sessionStorageService.get('documentsFormSelected') as string);
+        }
+        if (this.sessionStorageService.get('documentsPageIndex')) {
+            this.pageIndex = parseInt(this.sessionStorageService.get('documentsPageIndex') as string);
+        }
+        if (this.sessionStorageService.get('documentsSearch')) {
+            this.search = this.sessionStorageService.get('documentsSearch') as string;
+        }
+        if (this.sessionStorageService.get('documentsPageSize')) {
+            this.pageSize = parseInt(this.sessionStorageService.get('documentsPageSize') as string);
+        }
+        if (this.sessionStorageService.get('documentsTimeIndex')) {
+            this.selectedTab = parseInt(this.sessionStorageService.get('documentsTimeIndex') as string);
+            this.currentTime = this.batchList[this.selectedTab].id;
+        }
+
+        this.http.get(environment['url'] + '/ws/config/getConfigurationNoAuth/enableAttachments').pipe(
+            tap((data: any) => {
+                if (data.configuration.length === 1) {
+                    this.enableAttachments = data.configuration[0].data.value;
+                }
+            }),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+
+        _('ATTACHMENTS.attachments_count'); // Needed to get the translation in the JSON file
+        _('ATTACHMENTS.attachment_settings'); // Needed to get the translation in the JSON file
+        _('VERIFIER.nb_pages'); // Needed to get the translation in the JSON file
+        _('VERIFIER.expand_all'); // Needed to get the translation in the JSON file
+        _('VERIFIER.select_all'); // Needed to get the translation in the JSON file
+        _('VERIFIER.collapse_all'); // Needed to get the translation in the JSON file
+        _('VERIFIER.unselect_all'); // Needed to get the translation in the JSON file
+        _('VERIFIER.documents_settings'); // Needed to get the translation in the JSON file
+        this.sessionStorageService.save('splitter_or_verifier', 'verifier');
+
+        this.offset = this.pageSize * (this.pageIndex);
+
+        this.removeLockByUserId();
+
+        setTimeout(() => {
+            this.loadForms();
+            this.loadStatus();
+            this.loadCustomers(true);
+        }, 100);
+    }
+
+    loadStatus() {
+        this.http.get(environment['url'] + '/ws/status/verifier/list?totals=true&form_id=' + this.currentForm + '&user_id=' + this.userService.user.id + '&time=' + this.currentTime, {headers: this.authService.headers}).pipe(
             tap((data: any) => {
                 this.status = data.status;
             }),
@@ -179,51 +239,33 @@ export class VerifierListComponent implements OnInit {
                 return of(false);
             })
         ).subscribe();
-        this.loadCustomers();
     }
 
-    removeLockByUserId(userId: any) {
-        this.http.put(API_URL + '/ws/verifier/invoices/removeLockByUserId/' + userId, {}, {headers: this.authService.headers}).pipe(
-            tap(() => {}),
-            finalize(() => this.loading = false),
-            catchError((err: any) => {
-                console.debug(err);
-                this.notify.handleErrors(err);
-                return of(false);
-            })
-        ).subscribe();
-    }
-
-    loadCustomers() {
-        this.TREE_DATA = [];
-        this.http.get(API_URL + '/ws/accounts/customers/list', {headers: this.authService.headers}).pipe(
+    loadForms() {
+        this.http.get(environment['url'] + '/ws/forms/verifier/list?totals=true&status=' + this.currentStatus + '&user_id=' + this.userService.user.id + '&time=' + this.currentTime, {headers: this.authService.headers}).pipe(
             tap((data: any) => {
-                const customers = data.customers;
-                this.TREE_DATA.push({
-                    name: this.translate.instant('ACCOUNTS.customer_not_specified'),
-                    id: 0,
-                    parent_id: '',
-                    supplier_id: '',
-                    purchase_or_sale: '',
-                    display: true,
-                    count: 0,
-                    children: []
+                this.filteredForms = [];
+                this.filtersLists = [
+                    {'id': 'documents.id', 'label': 'HEADER.technical_id'},
+                    {'id': 'documents.register_date', 'label': 'FACTURATION.register_date_short'}
+                ];
+                this.forms = [
+                    {'id' : '', "label": this.translate.instant('VERIFIER.all_forms')},
+                    {'id' : 'no_form', "label": this.translate.instant('VERIFIER.no_form')}
+                ];
+                data.forms.forEach((form: any) => {
+                    if (form.total > 0) {
+                        form.settings.display.subtitles.forEach((subtitle: any) => {
+                            if (!['date', 'form_label', 'original_filename'].includes(subtitle.id)) {
+                                if (!this.filtersLists.some((filter: any) => filter.id === subtitle.id)) {
+                                    this.filtersLists.push({'id': subtitle.id, 'label': subtitle.label});
+                                }
+                            }
+                        });
+                        this.forms.push(form);
+                        this.filteredForms.push(form);
+                    }
                 });
-                this.allowedCustomers.push(0); // 0 is used if for some reasons no customer was recover by OC process
-                customers.forEach((customer: any) => {
-                    this.allowedCustomers.push(customer.id);
-                    this.TREE_DATA.push({
-                        name: customer.name,
-                        id: customer.id,
-                        parent_id: '',
-                        supplier_id: '',
-                        purchase_or_sale: '',
-                        display: true,
-                        count: 0,
-                        children: []
-                    });
-                });
-                this.loadInvoices();
             }),
             catchError((err: any) => {
                 console.debug(err);
@@ -233,12 +275,108 @@ export class VerifierListComponent implements OnInit {
         ).subscribe();
     }
 
-    loadInvoices() {
-        this.invoiceToDeleteSelected = false;
+    removeLockByUserId() {
+        this.http.put(environment['url'] + '/ws/verifier/documents/removeLockByUserId/' + this.userService.user.username, {}, {headers: this.authService.headers}).pipe(
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+    }
+
+    loadCustomers(init=false) {
+        this.TREE_DATA = [];
+        this.allowedCustomers.push(0); // 0 is used if for some reasons no customer was recover by OC process
+        this.http.get(environment['url'] + '/ws/accounts/customers/list/verifier', {headers: this.authService.headers}).pipe(
+            tap((data: any) => {
+                this.customersList = data.customers;
+                this.customersList.unshift({
+                    "id": 0,
+                    "name": this.translate.instant('ACCOUNTS.customer_not_specified')
+                });
+            }),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+        this.http.get(environment['url'] + '/ws/verifier/customersCount/' + this.userService.user.id + '/' + this.currentStatus + '/' + this.currentTime, {headers: this.authService.headers}).pipe(
+            tap((customers_count: any) => {
+                customers_count.forEach((customer_count: any) => {
+                    this.allowedCustomers.push(customer_count.customer_id);
+                    const node : any = {
+                        name: customer_count.name ? customer_count.name : this.translate.instant('ACCOUNTS.customer_not_specified'),
+                        id: customer_count.customer_id,
+                        parent_id: '',
+                        supplier_id: '',
+                        display: true,
+                        count: customer_count.total,
+                        children: []
+                    };
+
+                    Object.keys(customer_count['suppliers']).forEach((key: any, index: number) => {
+                        node['children'].push({
+                            name: key,
+                            id: index,
+                            display: true,
+                            count: 0,
+                            children: []
+                        });
+                        customer_count['suppliers'][key].forEach((supplier: any) => {
+                            node['children'][index]['count'] += supplier.total;
+                            node['children'][index]['children'].push({
+                                name: supplier.name ? supplier.name : this.translate.instant('ACCOUNTS.supplier_unknow'),
+                                supplier_id: supplier.supplier_id,
+                                parent_id: customer_count.customer_id,
+                                form_id: supplier.form_id ? supplier.form_id : -1,
+                                count: supplier.total,
+                                display: true
+                            });
+                        });
+                    });
+                    node['children'].forEach((node_child: any, index: number) => {
+                        if (node_child.name === this.translate.instant('VERIFIER.no_form')) {
+                            node['children'].unshift(node_child);
+                            node['children'].splice(index + 1, 1);
+                        }
+                    });
+                    this.TREE_DATA.push(node);
+                });
+                this.dataSource.data = this.TREE_DATA;
+                this.filterCustomers();
+                if (init && this.sessionStorageService.get('nodeSelected')) {
+                    this.loadDocumentPerCustomer(JSON.parse(<string>this.sessionStorageService.get('nodeSelected')));
+                } else {
+                    this.loadDocuments().then();
+                }
+            }),
+            finalize(() => this.loadingCustomers = false),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+    }
+
+    async loadDocuments(loading = true) {
+        this.documentToDeleteSelected = false;
         this.totalChecked = 0;
-        this.loading = true;
-        this.invoices = [];
-        this.http.get(API_URL + '/ws/verifier/invoices/totals/' + this.currentStatus, {headers: this.authService.headers}).pipe(
+        if (loading) {
+            this.documents = [];
+            this.loading = true;
+        }
+        this.loadingCustomers = true;
+        this.loadForms();
+        this.loadStatus();
+        let url = environment['url'] + '/ws/verifier/documents/totals/' + this.currentStatus + '/' + this.userService.user.id;
+
+        if (this.currentForm) {
+            url = environment['url'] + '/ws/verifier/documents/totals/' + this.currentStatus + '/' + this.userService.user.id + '/' + this.currentForm;
+        }
+        this.http.get(url, {headers: this.authService.headers}).pipe(
             tap((data: any) => {
                 this.totals = data.totals;
             }),
@@ -248,89 +386,102 @@ export class VerifierListComponent implements OnInit {
                 return of(false);
             })
         ).subscribe();
-        this.http.post(API_URL + '/ws/verifier/invoices/list',
+        this.allowedCustomers = [... new Set(this.allowedCustomers)]
+        this.http.post(environment['url'] + '/ws/verifier/documents/list',
             {
-                'allowedCustomers': this.allowedCustomers, 'status': this.currentStatus, 'allowedSuppliers': this.allowedSuppliers,
-                'time': this.currentTime, 'limit': this.pageSize, 'offset': this.offset, 'search': this.search,
-                'purchaseOrSale': this.purchaseOrSale
+                'allowedCustomers': this.allowedCustomers, 'status': this.currentStatus, 'limit': this.pageSize,
+                'allowedSuppliers': this.allowedSuppliers, 'form_id': this.currentForm, 'time': this.currentTime,
+                'offset': this.offset, 'search': this.search, 'order': this.currentOrder, 'filter': this.currentFilter,
+                'user_id': this.userService.user.id
             },
             {headers: this.authService.headers}
         ).pipe(
             tap((data: any) => {
                 if (data) {
-                    if (data.invoices.length !== 0) this.total = data.total;
-                    else if (this.pageIndex !== 0) {
+                    if (data.documents.length !== 0) {
+                        this.total = data.total;
+                    } else if (this.pageIndex !== 0) {
                         this.pageIndex = this.pageIndex - 1;
                         this.offset = this.pageSize * (this.pageIndex);
-                        this.loadInvoices();
+                        this.loadDocuments();
                     }
-                    this.invoices = data.invoices;
-                    this.invoices.forEach((invoice: any) => {
-                        if (!invoice.thumb.includes('data:image/jpeg;base64'))
-                            invoice.thumb = this.sanitizer.bypassSecurityTrustUrl('data:image/jpeg;base64, ' + invoice.thumb);
+
+                    if (this.total === 0) {
+                        if (this.search) {
+                            this.search = '';
+                            this.loadDocuments().then();
+                        }
+                        this.customerFilter.disable();
+                    } else {
+                        this.customerFilter.enable();
+                    }
+
+                    this.documents = data.documents;
+                    this.documents.forEach((document: any) => {
+                        if (document.document_id) {
+                            document['datas'].document_id = document.document_id;
+                        }
+                        if (!document.thumb.includes('data:image/jpeg;base64')) {
+                            document.thumb = this.sanitizer.sanitize(SecurityContext.URL, 'data:image/jpeg;base64, ' + document.thumb);
+                        }
+                        if (document.form_label === null || document.form_label === '' || document.form_label === undefined) {
+                            document.form_label = this.translate.instant('VERIFIER.no_form');
+                        }
+                        if (!document.form_id) {
+                            document.display = {
+                                "subtitles": [
+                                    {"id": "invoice_number", "label": "FACTURATION.invoice_number"},
+                                    {"id": "document_date", "label": "FACTURATION.document_date"},
+                                    {"id": "date", "label": "VERIFIER.register_date"},
+                                    {"id": "original_filename", "label": "VERIFIER.original_file"},
+                                    {"id": "form_label", "label": "ACCOUNTS.form"}
+                                ]
+                            };
+                        } else {
+                            this.forms.forEach((form: any) =>  {
+                                if (form.id === document.form_id) {
+                                    if (form.settings.display) {
+                                        document.display = form.settings.display;
+                                    }
+                                }
+                            });
+                        }
+
+                        if (!document.display) {
+                            document.display = {
+                                "subtitles": [
+                                    {"id": "invoice_number", "label": "FACTURATION.invoice_number"},
+                                    {"id": "document_date", "label": "FACTURATION.document_date"},
+                                    {"id": "date", "label": "VERIFIER.register_date"},
+                                    {"id": "original_filename", "label": "VERIFIER.original_file"},
+                                    {"id": "form_label", "label": "ACCOUNTS.form"}
+                                ]
+                            };
+                        }
+
+                        const document_display_tmp = document.display.subtitles;
+                        document.display = {'subtitles': []};
+                        document_display_tmp.forEach((subtitle: any) => {
+                            let subtitle_data = '';
+                            if (document['datas'].hasOwnProperty(subtitle.id)) {
+                                subtitle_data = document['datas'][subtitle.id];
+                            } else if (document.hasOwnProperty(subtitle.id)) {
+                                subtitle_data = document[subtitle.id];
+                            }
+
+                            document.display.subtitles.push({
+                                'id': subtitle.id,
+                                'label': subtitle.label,
+                                'data': subtitle_data ? subtitle_data : ''
+                            });
+                        });
                     });
                 }
-
-                /*
-                * Starting from here, we fill the customers tree
-                */
-                const customersPurchaseToKeep : any = [];
-                const customersSaleToKeep : any = [];
-                this.allowedCustomers.forEach((customer: any) => {
-                    this.invoices.forEach((invoice:any) => {
-                        if (invoice.purchase_or_sale === 'purchase' && !customersPurchaseToKeep.includes(customer))
-                            customersPurchaseToKeep.push(customer);
-                        if (invoice.purchase_or_sale === 'sale' && !customersSaleToKeep.includes(customer))
-                            customersSaleToKeep.push(customer);
-                    });
-                });
-
-                /*
-                * RESET the TREE DATA before re populate it
-                */
-                this.TREE_DATA.forEach((data: any, index: number) => {
-                    this.TREE_DATA[index].display = true;
-                    this.TREE_DATA[index].count = 0;
-                    this.TREE_DATA[index].children = [];
-                });
-
-                this.TREE_DATA.forEach((data: any, index: number) => {
-                    customersSaleToKeep.forEach((customer1: any) => {
-                        if (data.id === customer1) {
-                            let childExists = false;
-                            this.TREE_DATA[index].children.forEach((child: any) => {
-                                if (child.id === 0)
-                                    childExists = true;
-                            });
-                            if (!childExists) {
-                                this.TREE_DATA[index].children.push(
-                                    {name: this.translate.instant('UPLOAD.sale_invoice'), id: 0, display: true, count: 0, children: []},
-                                );
-                                this.createChildren('sale', 0, index);
-                            }
-                        }
-                    });
-                    customersPurchaseToKeep.forEach((customer2: any) => {
-                        if (data.id === customer2) {
-                            if (this.TREE_DATA[index]) {
-                                let childExists = false;
-                                this.TREE_DATA[index].children.forEach((child: any) => {
-                                    if (child.id === 1)
-                                        childExists = true;
-                                });
-                                if (!childExists) {
-                                    this.TREE_DATA[index].children.push(
-                                        {name: this.translate.instant('UPLOAD.purchase_invoice'), id: 1, display: true, count: 0, children: []},
-                                    );
-                                    this.createChildren('purchase', 1, index);
-                                }
-                            }
-                        }
-                    });
-                });
-                this.dataSource.data = this.TREE_DATA;
             }),
-            finalize(() => {this.loading = false;}),
+            finalize(() => {
+                this.loading = false;
+                this.loadingCustomers = false;
+            }),
             catchError((err: any) => {
                 console.debug(err);
                 this.notify.handleErrors(err);
@@ -339,103 +490,134 @@ export class VerifierListComponent implements OnInit {
         ).subscribe();
     }
 
-    fillChildren(parentId: any , parent: any, childName: any, supplierName: any, supplierId: any, id: any, purchaseOrSale: any) {
-        let childNameExists = false;
-        parent.forEach((child: any) => {
-            if (child.name === childName) {
-                childNameExists = true;
-                child.count = child.number + 1;
+    resetSearchCustomer() {
+        this.filterCustomers();
+        this.customerFilter.setValue('');
+        this.sessionStorageService.save('customerFilter', '');
+    }
+
+    filterCustomers() {
+        const tmpData = this.dataSource.data;
+        this.customerFilterEmpty = false;
+        let customerMatch = false;
+        tmpData.forEach((element: any) => {
+            if (element.name.toLowerCase().includes(this.customerFilter.value!.toLowerCase())) {
+                element.display = true;
+                customerMatch = true;
+            } else {
+                element.display = false;
             }
         });
-
-        if (!childNameExists) {
-            parent.push({
-                name: supplierName,
-                supplier_id: supplierId,
-                id: id,
-                parent_id: parentId,
-                purchase_or_sale: purchaseOrSale,
-                count: 1,
-                display: true
-            });
+        if (!customerMatch) {
+            this.customerFilterEmpty = true;
         }
+        this.dataSource.data = tmpData;
     }
 
-    createChildren(purchaseOrSale: any, id: any, index: any) {
-        this.TREE_DATA[index].children.forEach((child: any, childIndex: any) => {
-            if (child.id === id) {
-                this.invoices.forEach((invoice: any) => {
-                    if (this.TREE_DATA[index].id === invoice.customer_id && invoice.purchase_or_sale === purchaseOrSale) {
-                        if (invoice.supplier_id) {
-                            this.fillChildren(this.TREE_DATA[index].id, this.TREE_DATA[index].children[childIndex].children, invoice.supplier_name, invoice.supplier_name, invoice.supplier_id, invoice.invoice_id, purchaseOrSale);
-                        }else {
-                            this.fillChildren(this.TREE_DATA[index].id, this.TREE_DATA[index].children[childIndex].children, invoice.supplier_name, this.translate.instant('ACCOUNTS.supplier_unknow'), invoice.supplier_id, invoice.invoice_id, purchaseOrSale);
-                        }
-                        this.TREE_DATA[index].children[childIndex].count = this.TREE_DATA[index].children[childIndex].count + 1;
-                        this.TREE_DATA[index].count = this.TREE_DATA[index].count + 1;
-                    }
-                });
-            }
-        });
+    changeCustomer(customerId: number, documentId: number) {
+        this.loading = true;
+        this.loadingCustomers = true;
+        this.http.put(environment['url'] + '/ws/verifier/documents/' + documentId + '/update',
+            {'args': {"customer_id": customerId}},
+            {headers: this.authService.headers}).pipe(
+                finalize(() => {
+                    this.resetDocuments();
+                    this.notify.success(this.translate.instant('VERIFIER.customer_changed_successfully'));
+                }),
+                catchError((err: any) => {
+                    console.debug(err);
+                    this.notify.handleErrors(err);
+                    return of(false);
+                })
+        ).subscribe();
     }
 
-    loadInvoicePerCustomer(node: any) {
+    changeDocumentForm(formId: number, documentId: number) {
+        this.loading = true;
+        this.loadingCustomers = true;
+        this.http.put(environment['url'] + '/ws/verifier/documents/' + documentId + '/update',
+            {'args': {"form_id": formId}},
+            {headers: this.authService.headers}).pipe(
+                finalize(() => {
+                    this.resetDocuments();
+                    this.notify.success(this.translate.instant('VERIFIER.form_changed'));
+                }),
+                catchError((err: any) => {
+                    console.debug(err);
+                    this.notify.handleErrors(err);
+                    return of(false);
+                })
+        ).subscribe();
+    }
+
+    loadDocumentPerCustomer(node: any) {
+        const formId = node.form_id;
         const parentId = node.parent_id;
         const supplierId = node.supplier_id;
-        const purchaseOrSale = node.purchase_or_sale;
+        this.sessionStorageService.save('nodeSelected', JSON.stringify(node));
         this.TREE_DATA.forEach((element: any) => {
             if (element.id === parentId) {
                 const customerId = element.id;
+                this.customerFilterEnabled = true;
                 this.allowedCustomers = [customerId];
-                this.allowedSuppliers = [supplierId];
-                this.purchaseOrSale = purchaseOrSale;
+                if (supplierId) {
+                    this.allowedSuppliers = [supplierId];
+                } else if (supplierId == null) {
+                    this.allowedSuppliers = [0];
+                }
+                this.currentForm = formId;
                 this.resetPaginator();
-                this.loadInvoices();
+                this.loadDocuments().then();
             }
         });
     }
 
-    resetInvoices() {
+    resetDocuments() {
+        this.search = '';
         this.loading = true;
+        this.currentForm = '';
         this.allowedCustomers = [];
         this.allowedSuppliers = [];
-        this.purchaseOrSale = '';
-        this.search = '';
+        this.loadingCustomers = true;
+        this.customerFilterEnabled = false;
+        this.sessionStorageService.save('nodeSelected', '');
+        this.loadCustomers();
         this.resetPaginator();
-        this.loadCustomers();
+        this.resetSearchCustomer();
     }
 
-    selectOrUnselectAllInvoices(event: any) {
+    selectOrUnselectAllDocuments(event: any, forceUnselect: boolean = false) {
         const label = event.srcElement.textContent;
-        this.invoiceToDeleteSelected = !this.invoiceToDeleteSelected;
-        const checkboxList = $(".checkBox_list");
-        checkboxList.each((cpt: any) => {
-            checkboxList[cpt].checked = label === this.translate.instant('VERIFIER.select_all');
+        this.documentToDeleteSelected = !this.documentToDeleteSelected;
+        if (forceUnselect) {
+            this.documentToDeleteSelected = false;
+        }
+        const checkboxList = document.getElementsByClassName('checkBox_list');
+        Array.from(checkboxList).forEach((element: any) => {
+            element.checked = (label === this.translate.instant('VERIFIER.select_all'));
         });
-        this.totalChecked = $('input.checkBox_list:checked').length;
+        this.totalChecked = document.querySelectorAll('.checkBox_list:checked').length;
     }
 
-    deleteAllInvoices() {
+    deleteAllDocuments() {
         this.loading = true;
-        const checkboxList = $(".checkBox_list");
-        checkboxList.each((cpt: any) => {
-            if (checkboxList[cpt].checked) {
-                const invoiceId = checkboxList[cpt].id.split('_')[0];
-                this.deleteInvoice(invoiceId, true);
-            }
+        this.loadingCustomers = true;
+        const checkboxList = document.querySelectorAll('.checkBox_list:checked');
+        Array.from(checkboxList).forEach((element: any) => {
+            const documentId = element.id.split('_')[0];
+            this.deleteDocument(documentId, true);
         });
-        this.notify.success(this.translate.instant('VERIFIER.all_invoices_checked_deleted'));
+        this.notify.success(this.translate.instant('VERIFIER.all_documents_checked_deleted'));
         this.loadCustomers();
     }
 
-    deleteInvoice(invoiceId: number, batchDelete = false) {
-        this.http.delete(API_URL + '/ws/verifier/invoices/delete/' + invoiceId, {headers: this.authService.headers}).pipe(
+    deleteDocument(documentId: number, batchDelete = false) {
+        this.http.delete(environment['url'] + '/ws/verifier/documents/delete/' + documentId, {headers: this.authService.headers}).pipe(
             tap(() => {
                 if (!batchDelete) {
                     this.loadCustomers();
-                    this.notify.success(this.translate.instant('VERIFIER.invoices_deleted'));
+                    this.notify.success(this.translate.instant('VERIFIER.documents_deleted'));
                 }
-                this.historyService.addHistory('verifier', 'delete_invoice', this.translate.instant('HISTORY-DESC.delete_invoice', {invoice_id: invoiceId}));
             }),
             catchError((err: any) => {
                 console.debug(err);
@@ -445,104 +627,154 @@ export class VerifierListComponent implements OnInit {
         ).subscribe();
     }
 
-    checkCheckedInvoices() {
-        this.totalChecked = $('input.checkBox_list:checked').length;
-        this.invoiceToDeleteSelected = this.totalChecked !== 0;
+    checkCheckedDocuments() {
+        this.totalChecked = document.querySelectorAll('.checkBox_list:checked').length;
+        this.documentToDeleteSelected = this.totalChecked !== 0;
     }
 
-    deleteConfirmDialog(invoiceId: number) {
+    deleteConfirmDialog(documentId: number) {
         const dialogRef = this.dialog.open(ConfirmDialogComponent, {
-            data:{
+            data: {
                 confirmTitle        : this.translate.instant('GLOBAL.confirm'),
-                confirmText         : this.translate.instant('VERIFIER.confirm_delete_invoice'),
+                confirmText         : this.translate.instant('VERIFIER.confirm_delete_document'),
                 confirmButton       : this.translate.instant('GLOBAL.delete'),
                 confirmButtonColor  : "warn",
-                cancelButton        : this.translate.instant('GLOBAL.cancel'),
+                cancelButton        : this.translate.instant('GLOBAL.cancel')
             },
-            width: "600px",
+            width: "600px"
         });
 
         dialogRef.afterClosed().subscribe(result => {
             if (result) {
                 this.loading = true;
-                this.deleteInvoice(invoiceId);
+                this.loadingCustomers = true;
+                this.deleteDocument(documentId);
             }
         });
     }
 
-    displayInvoiceLocked(lockedBy: any) {
+    displayDocumentLocked(lockedBy: any) {
         this.dialog.open(ConfirmDialogComponent, {
-            data:{
-                confirmTitle        : this.translate.instant('VERIFIER.invoice_locked'),
-                confirmText         : this.translate.instant('VERIFIER.invoice_locked_by', {'locked_by': lockedBy}),
+            data: {
+                confirmTitle        : this.translate.instant('VERIFIER.document_locked'),
+                confirmText         : this.translate.instant('VERIFIER.document_locked_by', {'locked_by': lockedBy}),
                 confirmButton       : this.translate.instant('GLOBAL.confirm'),
                 confirmButtonColor  : "warn"
             },
-            width: "600px",
+            width: "600px"
         });
     }
 
     deleteAllConfirmDialog() {
         const dialogRef = this.dialog.open(ConfirmDialogComponent, {
-            data:{
+            data: {
                 confirmTitle        : this.translate.instant('GLOBAL.confirm'),
-                confirmText         : this.translate.instant('VERIFIER.confirm_delete_all_invoices'),
-                confirmButton       : this.translate.instant('VERIFIER.delete_all_checked'),
+                confirmText         : this.translate.instant('VERIFIER.confirm_delete_all_documents'),
+                confirmButton       : this.translate.instant('GLOBAL.delete_all_checked'),
                 confirmButtonColor  : "warn",
-                cancelButton        : this.translate.instant('GLOBAL.cancel'),
+                cancelButton        : this.translate.instant('GLOBAL.cancel')
             },
-            width: "600px",
+            width: "600px"
         });
 
         dialogRef.afterClosed().subscribe(result => {
             if (result) {
-                this.deleteAllInvoices();
+                this.deleteAllDocuments();
             }
         });
     }
 
     changeStatus(event: any) {
         this.currentStatus = event.value;
+        this.sessionStorageService.save('statusFormSelected', this.currentStatus);
         this.resetPaginator();
-        this.loadInvoices();
+        this.loadCustomers();
+        this.loadDocuments().then();
+    }
+
+    changeForm(event: any) {
+        this.currentForm = event.value;
+        this.sessionStorageService.save('documentsFormSelected', this.currentForm);
+        this.resetPaginator();
+        this.loadCustomers();
+        this.loadDocuments().then();
     }
 
     onTabChange(event: any) {
         this.search = '';
+        this.currentForm = '';
+        this.allowedSuppliers = [];
         this.selectedTab = event.index;
-        this.localeStorageService.save('invoicesTimeIndex', this.selectedTab);
         this.currentTime = this.batchList[this.selectedTab].id;
+        this.sessionStorageService.save('documentsTimeIndex', this.selectedTab);
         this.resetPaginator();
-        this.loadInvoices();
+        this.loadCustomers();
     }
 
     onPageChange(event: any) {
         this.pageSize = event.pageSize;
         this.offset = this.pageSize * (event.pageIndex);
         this.pageIndex = event.pageIndex;
-        this.localeStorageService.save('invoicesPageIndex', event.pageIndex);
-        this.loadInvoices();
+        this.sessionStorageService.save('documentsPageSize', event.pageSize);
+        this.sessionStorageService.save('documentsPageIndex', event.pageIndex);
+        this.loadDocuments().then();
     }
 
-    searchInvoice(event: any) {
-        this.search = event.target.value;
-        this.loadInvoices();
+    searchDocument(event: any) {
+        if (!this.searchLoading) {
+            this.searchLoading = true;
+            setTimeout(() => {
+                this.search = event.target.value;
+                this.loadDocuments(false).then();
+                this.sessionStorageService.save('documentsSearch', this.search);
+                this.searchLoading = false;
+            }, 1000);
+        }
     }
 
     resetPaginator() {
         this.total = 0;
         this.offset = 0;
         this.pageIndex = 0;
-        this.localeStorageService.save('invoicesPageIndex', this.pageIndex);
+        this.sessionStorageService.save('documentsPageIndex', this.pageIndex);
     }
 
     expandAll() {
+        if (!this.expanded) {
+            this.treeControl.expandAll();
+        } else {
+            this.treeControl.collapseAll();
+        }
         this.expanded = !this.expanded;
-        /*
-        * mat-tree-node.child are clicked twice to be sure they will be close at the second click
-         */
-        $('mat-tree-node.child').click();
-        $('mat-tree-node.parent').click();
-        $('mat-tree-node.child').click();
+    }
+
+    switchDisplayMode() {
+        if (this.displayMode === 'grid') {
+            this.displayMode = 'list';
+        } else {
+            this.displayMode = 'grid';
+        }
+        this.selectOrUnselectAllDocuments({srcElement: {textContent: this.translate.instant('VERIFIER.unselect_all')}}, true);
+        localStorage.setItem('verifierListDisplayMode', this.displayMode);
+    }
+
+    showThumbnail(thumb_b64: any) {
+        this.documentListThumb = thumb_b64;
+    }
+
+    resetThumbnail() {
+        this.documentListThumb = '';
+    }
+
+    changeFilter(filter: string) {
+        this.currentFilter = filter;
+        localStorage.setItem('verifierFilter', filter);
+        this.loadDocuments().then()
+    }
+
+    changeOrder(order: string) {
+        this.currentOrder = order;
+        localStorage.setItem('verifierOrder', order);
+        this.loadDocuments().then()
     }
 }

@@ -1,119 +1,75 @@
-<mat-sidenav-container class="absolute left-0 right-0 bottom-0" style="top: 4.2rem">
-    <mat-sidenav #sidenav mode="side" opened class="w-1/6 flex flex-col h-full border-r border-green-400"
-                 style="top:0.1rem">
-        <h3 class="bg-green-400 bg-opacity-60 text-center text-gray-900 m-0 pb-4"
-            style="padding-top: 0.9rem">{{ "SETTINGS.administration" | translate }}</h3>
-        <mat-divider class="border-green-400"></mat-divider>
-        <mat-nav-list class="pt-0">
-                        <mat-expansion-panel *ngFor="let parent of this.serviceSettings.getSettingsParent()"
-                     [expanded]="parent.opened" (opened)="this.serviceSettings.closeOtherParent(this.router.url, parent['id'])">
-                <mat-expansion-panel-header class="settings_expansion">
-                    <mat-panel-title>
-                        {{ parent['label'] | translate }}
-                    </mat-panel-title>
-                </mat-expansion-panel-header>
-                <div class="w-full border-t-2 border-gray-600">
-                    <div *ngFor="let setting of this.serviceSettings.getSettings()[parent['id']];"
-                         [class.border-b]="this.privilegesService.hasPrivilege(setting['privilege']) || setting['privilege'] === '*'"
-                         [class.border-gray-400]="this.privilegesService.hasPrivilege(setting['privilege']) || setting['privilege'] === '*'">
-                        <div *ngIf="this.serviceSettings.getSettingsAction(parent['id'], setting['id']) else noActions">
-                            <mat-expansion-panel
-                                    *ngIf="this.privilegesService.hasPrivilege(setting['privilege']) || setting['privilege'] === '*'"
-                                    [expanded]="this.router.url.includes(setting['route'])">
-                                <mat-expansion-panel-header class="font-normal w-full h-20">
-                                    <mat-panel-title class="font-normal justify-center items-center text-center">
-                                        <i [class.text-green-400]="this.router.url === setting['route']"
-                                           class="absolute text-lg left-4 w-10 h-10 rounded-full flex items-center justify-center {{setting['icon']}}">
-                                        </i>
-                                        <button mat-button [class.text-green-400]="this.router.url === setting['route']"
-                                                class="pr-0 font-normal w-full h-20 flex justify-center items-center text-center"
-                                                (click)="this.serviceSettings.changeSetting(setting['id'], parent['id'])"
-                                                routerLink="{{ setting['route'] }}">
-                                            <p [class.font-medium]="this.router.url === setting['route']" class="m-0">
-                                                {{ setting['label'] | translate }}
-                                            </p>
-                                        </button>
-                                    </mat-panel-title>
-                                </mat-expansion-panel-header>
-                                <div *ngFor="let action of this.serviceSettings.getSettingsAction(parent['id'], setting['id'])"
-                                     [class.border-gray-600]="!action['showOnlyIfActive']"
-                                     [class.border-t]="!action['showOnlyIfActive']"
-                                     [class.w-full]="!action['showOnlyIfActive']">
-                                    <div class="border-b border-gray-400"
-                                         *ngIf="(this.privilegesService.hasPrivilege(action['privilege']) || setting['privilege'] === '*') && (!action['showOnlyIfActive'] || (action['showOnlyIfActive'] && this.router.url.includes(action['route'])))">
-                                        <button mat-button
-                                                [class.text-green-400]="this.router.url.includes(action['route'])"
-                                                class="font-normal w-full h-12 ml-12 flex items-center text-center"
-                                                (click)="this.serviceSettings.changeSetting(setting['id'], parent['id'])"
-                                                routerLink="{{ action['route'] }}"
-                                                [class.disable_link]="action['showOnlyIfActive']">
-                                            <i class="absolute text-lg w-10 h-10 rounded-full flex items-center justify-center {{action['icon']}}"></i>
-                                            <p class="m-0 ml-12" style="margin-top: 2.5px!important">
-                                                {{ action['label'] | translate }}
-                                            </p>
-                                        </button>
-                                    </div>
-                                </div>
-                            </mat-expansion-panel>
-                        </div>
-                        <ng-template #noActions>
-                            <button *ngIf="this.privilegesService.hasPrivilege(setting['privilege']) || setting['privilege'] === '*'"
-                                    mat-button [class.text-green-400]="this.router.url === setting['route']"
-                                    class="pr-0 font-normal w-full h-20 flex justify-center items-center text-center"
-                                    (click)="this.serviceSettings.changeSetting(setting['id'], parent['id'])"
-                                    routerLink="{{ setting['route'] }}">
-                                <i class="absolute left-4 w-10 h-10 rounded-full flex items-center justify-center fa-lg {{setting['icon']}}"></i>
-                                <p [class.font-medium]="this.router.url === setting['route']" class="m-0">
-                                    {{ setting['label'] | translate }}
-                                </p>
-                            </button>
-                        </ng-template>
-                    </div>
-                </div>
-            </mat-expansion-panel>
-        </mat-nav-list>
+<mat-sidenav-container class="absolute left-0 right-0 bottom-0" style="top: 4.1rem" [autosize]="true">
+    <mat-sidenav #sidenav mode="side" [opened]="true" class="settings-menu-nav" [class.w-20]="this.serviceSettings.minimizeSideNav">
+        <app-settings-menu [minimizeSideNav]="this.serviceSettings.minimizeSideNav"></app-settings-menu>
     </mat-sidenav>
     <mat-sidenav-content class="bg-white overflow-hidden">
-        <div class="settings_header z-30">
-            <button mat-icon-button (click)="sidenav.toggle(); this.serviceSettings.toggleMenu();"
-                    class="absolute left-2 top-2">
-                <i [class.fa-arrow-right]="!this.serviceSettings.getIsMenuOpen()"
-                   class="fas fa-arrow-left text-2xl text-gray-900"></i>
-            </button>
-            <div class="settings_title text-center">
-                <h3>{{ this.serviceSettings.getTitle() }}</h3>
-                <hr class="border-green-400">
+        <div class="settings_header z-50">
+            <div class="flex">
+                <button mat-icon-button (click)="this.serviceSettings.minimizeSideNav = !this.serviceSettings.minimizeSideNav;">
+                    <i [class.transform]="!sidenav.opened" [class.rotate-180]="!sidenav.opened" class="fa-solid fa-stream text-2xl text-gray-900"></i>
+                </button>
+            </div>
+            <h3 class="text-center m-0">{{ this.serviceSettings.getTitle() }}</h3>
+            <div class="settings_search">
+                <button mat-icon-button (click)="sidenav2.toggle();">
+                    <i [class.transform]="sidenav2.opened" [class.rotate-180]="sidenav2.opened"
+                       class="fa-solid fa-stream text-xl text-gray-900"></i>
+                </button>
             </div>
         </div>
-        <app-document-type-factory [data]="{canFolderBeSelected: false}" (selectedDoctypeOutput)="getOutPut($event)"></app-document-type-factory>
+        <hr class="border-green-400 relative z-50">
+        <app-document-type-factory [ngClass]="{'pointer-events-none opacity-50': loadingSeparator}"
+                                   [settings]="{'canFolderBeSelected': false, 'showFoldersSeparatorBtn': true, 'allowImportExport': false, 'allowUniqueDocType' : false }"
+                                   (selectedDoctypeOutput)="getOutPut($event)">
+        </app-document-type-factory>
     </mat-sidenav-content>
-    <mat-sidenav #sidenav2 mode="side" opened position="end" class="overflow-auto w-1/4 flex flex-col h-full border-r border-green-400">
-        <h3 class="bg-green-400 bg-opacity-60 text-center text-gray-900 m-0 pb-4" style="padding-top: 0.9rem">{{ 'DOCTYPE.download_separator' | translate }}</h3>
+    <mat-sidenav #sidenav2 mode="side" [opened]="true" position="end" class="overflow-hidden w-1/4 flex flex-col h-full border-r border-green-400">
+        <h3 class="bg-green-400/60 text-center text-gray-900 m-0 p-4">
+            {{ 'DOCTYPE.download_separator' | translate }}
+        </h3>
         <mat-divider class="border-green-400"></mat-divider>
         <div class="w-full grid grid-cols-2 m-2 mt-4">
             <mat-form-field appearance="outline">
                 <mat-label>{{ 'DOCTYPE.separator_choice '| translate }}</mat-label>
                 <mat-select [disabled]="loadingSeparator" [(ngModel)]="selectedSeparator" (ngModelChange)="onChangeType()">
-                    <mat-option *ngFor="let separator of separators" [id]="separator.id" [value]="separator.id " [disabled]="separator.disabled">
-                        {{ separator.name| translate }}
-                    </mat-option>
+                    @for (separator of separators; track separator.id) {
+                        <mat-option [id]="separator.id" [value]="separator.id " [disabled]="separator.disabled">
+                            {{ separator.name| translate }}
+                        </mat-option>
+                    }
                 </mat-select>
             </mat-form-field>
             <div class="text-right">
-                <button mat-button [disabled]="loadingSeparator" (click)="downloadSeparator()" class="w-10 h-12">
+                <button mat-button [matTooltip]="'DOCTYPE.download_separator' | translate" [disabled]="loadingSeparator" (click)="downloadSeparator()" class="w-10 h-12">
                     <i class="fa-solid fa-file-arrow-down fa-2x"></i>
                 </button>
             </div>
         </div>
-        <div class="text-center text-gray-400">
-            <div *ngIf="loadingSeparator">
-                <i class="fa-solid fa-qrcode fa-4x w-full"></i>
-                <span class="w-full">
-                    {{ 'DOCTYPE.generating_separator' | translate }}
-                </span>
+        @if (this.loadingSeparator) {
+            <div class="flex text-gray-400 object-contain" style="height: calc(100% - 230px)">
+                <div class="m-auto text-center">
+                    <i class="fa-solid fa-qrcode fa-4x fa-beat-fade w-full mb-1"></i>
+                    <span class="w-full">
+                        {{ 'DOCTYPE.generating_separator' | translate }}
+                    </span>
+                </div>
             </div>
-            <img *ngIf="!loadingSeparator" [src]="separator.thumbnailUrl" alt="Separator thumbnail">
-        </div>
+        } @else {
+            <div class="text-center text-gray-400 object-contain">
+                <img class="m-auto w-11/12" [src]="separator.thumbnails[separator.current - 1]" alt="Separator thumbnail">
+                <button mat-button [matTooltip]="'DOCTYPE.previous_page' | translate" [disabled]="loadingSeparator"
+                        (click)="moveCurrentThumbnail(-1)" class="hover:text-green-400">
+                    <i class="fa-solid fa-arrow-left fa-lg"></i>
+                </button>
+                {{separator.current}} / {{separator.total}}
+                <button mat-button [matTooltip]="'DOCTYPE.next_page' | translate" [disabled]="loadingSeparator"
+                        (click)="moveCurrentThumbnail(1)" class="hover:text-green-400">
+                    <i class="fa-solid fa-arrow-right fa-lg"></i>
+                </button>
+            </div>
+        }
+
+
     </mat-sidenav>
 </mat-sidenav-container>
 

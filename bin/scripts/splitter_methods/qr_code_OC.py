@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -11,43 +12,61 @@
 # GNU General Public License for more details.
 
 # You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/>.
+# along with Open-Capture. If not, see <https://www.gnu.org/licenses/>.
 
 # @dev : Oussama BRICH <oussama.brich@edissyum.com>
 
-def process(args, file, log, splitter, files, tmp_folder, config):
+
+def process(args):
     """
-    :param args:
-    :param file: File path to split
-    :param log: log object
-    :param splitter: Splitter object
-    :param files: Files object
-    :param tmp_folder: tmp folder path
-    :param config: Config object
+    Process custom split for file
+    :param args: has :
+    - log: log object
+    - user_id: User id
+    - docservers: paths
+    - files: Files object
+    - config: Config object
+    - ocr: PyTesseract object
+    - file: File path to split
+    - splitter: Splitter object
+    - regex: regex content values
+    - customer_id: used customer id
+    - batch_folder: batch folder path
+    - configurations: configuration values
+    - ocrise: bool, launch OCR on file or not
+    - artificial_intelligence: ArtificialIntelligence object
     :return: N/A
     """
-    log.info('Processing file for separation : ' + file)
 
-    # Get the OCR of the file as a list of line content and position
-    files.pdf_to_jpg(file, open_img=False)
-    list_files = files.sorted_file(tmp_folder, 'jpg')
+    args['log'].info('Processing file for separation : ' + args['file'])
+    batch_folder_path = f"{args['docservers']['SPLITTER_BATCHES']}/{args['batch_folder']}/"
+    batch_thumbs_path = f"{args['docservers']['SPLITTER_THUMB']}/{args['batch_folder']}/"
+    saved_pages = args['files'].save_img_with_pdf2image(args['file'], batch_folder_path + "page")
+    args['files'].save_img_with_pdf2image_min(args['file'], batch_thumbs_path + "page", single_file=False, module='splitter')
+
+    list_files = args['files'].sorted_file(batch_folder_path, 'jpg')
     blank_pages = []
 
     # Remove blank pages
-    if splitter.separator_qr.remove_blank_pages:
+    if args['splitter'].separator_qr.remove_blank_pages:
         cpt = 0
         tmp_list_files = list_files
         for f in tmp_list_files:
-            if files.is_blank_page(f[1]):
+            if args['files'].is_blank_page(f[1]):
                 blank_pages.append(cpt)
             cpt = cpt + 1
 
-    splitter.separator_qr.run(file)
-    split(splitter, list_files)
-    splitter.get_result_documents(blank_pages)
-    original_file = file
-    file = files.move_to_docservers(config.cfg, file, 'splitter')
-    splitter.save_documents(tmp_folder, file, args['input_id'], original_file)
+    args['splitter'].separator_qr.run(args['file'], saved_pages)
+
+    split(args['splitter'], list_files)
+    args['splitter'].get_result_documents(blank_pages)
+    original_file = args['file']
+    file = args['files'].move_to_docservers(args['docservers'], args['file'], 'splitter')
+    if args['ocrise']:
+        args['files'].ocrise_pdf(file, args['log'])
+
+    process_res = args['splitter'].create_batches(args, file, original_file)
+    return process_res
 
 
 def split(splitter, pages):
@@ -68,43 +87,36 @@ def split(splitter, pages):
                                    splitter.separator_qr.pages))
         if is_separator:
             qr_code = is_separator[0]['qr_code']
-            splitter.log.info("QR Code in page " + str(index) + " : " + str(qr_code))
+            if splitter.doc_start in qr_code or splitter.bundle_start in qr_code:
+                qr_items = qr_code.split('|')
+                splitter.log.info("QR Code in page " + str(index) + " : " + str(qr_code))
 
-            """
-                Open-Capture separator
-            """
-            if splitter.doc_start in qr_code:
-                separator_type = splitter.doc_start
-                if len(qr_code.split('|')) > 1:
-                    doctype_value = qr_code.split("|")[1] if qr_code.split("|")[1] else None
-                    if len(qr_code.split('|')) > 2:
-                        metadata_1 = qr_code.split("|")[2] if qr_code.split("|")[2] else None
-                        if len(qr_code.split('|')) > 3:
-                            metadata_2 = qr_code.split("|")[3] if qr_code.split("|")[3] else None
-                            if len(qr_code.split('|')) > 4:
-                                metadata_3 = qr_code.split("|")[4] if qr_code.split("|")[4] else None
-                            else:
-                                metadata_3 = None
-                        else:
-                            metadata_2 = None
-                    else:
-                        metadata_1 = None
-                else:
+                """
+                    Open-Capture separator
+                """
+                if splitter.doc_start in qr_items:
+                    separator_type = splitter.doc_start
+                    if len(qr_items) > 1:
+                        doctype_value = qr_items[1] if qr_items[1] else None
+
+                elif splitter.bundle_start in qr_items:
+                    separator_type = splitter.bundle_start
                     doctype_value = None
 
-            elif splitter.bundle_start in qr_code:
-                separator_type = splitter.bundle_start
-                doctype_value = None
-
-            splitter.log.info("Code QR in page " + str(index) + " : " + qr_code)
+                if len(qr_items) > 2:
+                    metadata_1 = qr_items[2] if qr_items[2] else None
+                    if len(qr_items) > 3:
+                        metadata_2 = qr_items[3] if qr_items[3] else None
+                        if len(qr_items) > 4:
+                            metadata_3 = qr_items[4] if qr_items[4] else None
 
         splitter.qr_pages.append({
             'source_page': index,
             'separator_type': separator_type,
             'doctype_value': doctype_value,
-            'maarch_value': None,
+            'mem_value': None,
             'metadata_1': metadata_1,
             'metadata_2': metadata_2,
             'metadata_3': metadata_3,
-            'path': path,
+            'path': path
         })

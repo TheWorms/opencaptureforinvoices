@@ -1,0 +1,255 @@
+<mat-sidenav-container class="absolute left-0 right-0 bottom-0" style="top: 4.1rem" [autosize]="true">
+    <mat-sidenav #sidenav mode="side" [opened]="true" class="settings-menu-nav" [class.w-20]="this.serviceSettings.minimizeSideNav">
+        <app-settings-menu [minimizeSideNav]="this.serviceSettings.minimizeSideNav"></app-settings-menu>
+    </mat-sidenav>
+    <mat-sidenav-content class="bg-white overflow-hidden">
+        @if (this.loading) {
+            <div>
+                <app-loader></app-loader>
+            </div>
+        }
+        <div class="settings_header">
+            <div class="flex">
+                <button mat-icon-button (click)="this.serviceSettings.minimizeSideNav = !this.serviceSettings.minimizeSideNav;">
+                    <i [class.transform]="!sidenav.opened" [class.rotate-180]="!sidenav.opened" class="fa-solid fa-stream text-2xl text-gray-900"></i>
+                </button>
+            </div>
+            <h3 class="text-center m-0">{{ this.serviceSettings.getTitle() }}</h3>
+            <div class="settings_search">
+                <button mat-icon-button (click)="sidenav2.toggle();">
+                    <i [class.transform]="sidenav2.opened" [class.rotate-180]="sidenav2.opened" class="fa-solid fa-stream text-2xl text-gray-900"></i>
+                </button>
+            </div>
+        </div>
+        <hr class="border-green-400 relative z-30">
+        <div class="overflow-x-hidden overflow-y-auto h-full-overflow">
+            @if (!this.loading) {
+                <div class="flex justify-center items-center">
+                    <form class="grid grid-cols-2 gap-12 w-full mb-5 mx-10 mt-10 text-center">
+                        @for (field of this.outputForm; track field) {
+                            @if (field['type'] === 'text') {
+                                <mat-form-field>
+                                    <mat-label>{{ field['label'] | translate }}</mat-label>
+                                    <input matInput [value]="field.control.value" [formControl]="field['control']"
+                                           [type]="field['type']" [placeholder]="field['label'] | translate" [required]="field['required']">
+                                    @if (field.control.invalid) {
+                                        <mat-error>{{ getErrorMessage(field['id'], outputForm) }}</mat-error>
+                                    }
+                                </mat-form-field>
+                            } @else if (field['type'] === 'select' && field['id'] === 'output_type_id') {
+                                <mat-form-field>
+                                    <mat-label>{{ field['label'] | translate }}</mat-label>
+                                    <mat-select [name]="field['id']" [id]="field['id']" [(ngModel)]="field.control.value" (selectionChange)="changeOutputType($event)">
+                                        @for (option of this.outputsTypes; track option['output_type_id']) {
+                                            <mat-option [value]="option['output_type_id']">
+                                                {{ option['output_type_label'] }}
+                                            </mat-option>
+                                        }
+                                    </mat-select>
+                                    @if (field.control.invalid) {
+                                        <mat-error>{{ getErrorMessage(field['id'], this.outputForm) }}</mat-error>
+                                    }
+                                </mat-form-field>
+                            } @else if (field['type'] === 'select' && (field['id'] === 'compress_type' || field['id'] === 'ocrise') &&
+                                        (this.selectedOutputType === 'export_pdf' || this.selectedOutputType === 'export_cmis' || this.selectedOutputType === 'export_openads')) {
+                                <mat-form-field>
+                                    <mat-label>{{ field['label'] | translate }}</mat-label>
+                                    <mat-select [name]="field['id']" [id]="field['id']" [(ngModel)]="field.control.value">
+                                        @for (option of field.values; track option['id']) {
+                                            <mat-option [value]="option['id']">
+                                                {{ option['label'] | translate }}
+                                            </mat-option>
+                                        }
+                                    </mat-select>
+                                    @if (field.control.invalid) {
+                                        <mat-error>{{ getErrorMessage(field['id'], outputForm) }}</mat-error>
+                                    }
+                                </mat-form-field>
+                            }
+                        }
+                    </form>
+                </div>
+            }
+            <mat-divider class="w-1/2 m-auto border-green-400"></mat-divider>
+            <h4 class="text-center mt-5 mb-5">{{ 'OUTPUT.output_settings_list' | translate }}</h4>
+            <div class="flex justify-center items-center mb-2">
+                <button (click)="updateOutput()" mat-button class="valid_button">
+                    <span class="block">{{ "OUTPUT.update" | translate }}</span>
+                </button>
+            </div>
+            <div class="flex justify-center items-center ml-10 mr-5">
+                @if (this.selectedOutputType && this.outputsTypesForm[selectedOutputType]) {
+                    <form class="w-full text-center">
+                        <mat-tab-group class="output-tab" [selectedIndex]="this.outputsTypesForm[selectedOutputType]['auth'].length === 0 ? 1 : 0">
+                            <mat-tab [label]="'OUTPUT.auth' | translate">
+                                @if (this.outputsTypesForm[selectedOutputType]['auth'].length === 0) {
+                                    <span class="relative top-10 text-xl">
+                                        {{ 'OUTPUT.no_auth_necessary' | translate }}
+                                    </span>
+                                }
+                                <div class="grid grid-cols-3 gap-x-4 gap-y-10 m-5">
+                                    @for (field of outputsTypesForm[selectedOutputType]['auth']; track field['id']) {
+                                        @if (field['type'] === 'text' || field['type'] === 'number') {
+                                            <mat-form-field>
+                                                <mat-label>{{ field['label'] | translate }}</mat-label>
+                                                <input matInput [value]="field.control.value" [formControl]="field['control']"
+                                                       [type]="field['type']" [placeholder]="field.placeholder" [required]="field['required']">
+                                                @if (field.control.invalid) {
+                                                    <mat-error>
+                                                        {{ getErrorMessage(field['id'], outputsTypesForm[selectedOutputType]['auth']) }}
+                                                    </mat-error>
+                                                }
+                                            </mat-form-field>
+                                        } @else if (field['type'] === 'password') {
+                                            <mat-form-field>
+                                                <mat-label>{{ field['label'] | translate }}</mat-label>
+                                                <input matInput [value]="field.control.value" [formControl]="field['control']"
+                                                       [type]="this.showPassword[field['id']] ? 'text' : 'password'"
+                                                       [placeholder]="field.placeholder" [required]="field['required']">
+                                                @if (field.control.invalid) {
+                                                    <mat-error>{{ getErrorMessage(field['id'], outputsTypesForm[selectedOutputType]['auth']) }}</mat-error>
+                                                }
+                                                <mat-icon matSuffix (click)="this.showPassword[field['id']] = !this.showPassword[field['id']]"
+                                                          class="text-green-400 relative cursor-pointer -top-0.5 text-base">
+                                                    <i class="fa fa-1x" [class.fa-eye-slash]="!this.showPassword[field['id']]" [class.fa-eye]="this.showPassword[field['id']]"></i>
+                                                </mat-icon>
+                                            </mat-form-field>
+                                        }
+                                    }
+                                </div>
+                                @if (this.outputsTypesForm[selectedOutputType]['auth'].length !== 0) {
+                                    <button mat-button class="valid_button mb-2" (click)="testConnection()">
+                                        <span>{{ "OUTPUT.test_connection" | translate }}</span>
+                                    </button>
+                                }
+                            </mat-tab>
+                            <mat-tab [label]="'OUTPUT.parameters' | translate">
+                                @if (this.outputsTypesForm[selectedOutputType]['parameters'].length === 0) {
+                                    <span class="relative top-10 text-xl">
+                                        {{ 'OUTPUT.no_parameters_necessary' | translate }}
+                                    </span>
+                                }
+                                <div class="grid grid-cols-3 gap-x-4 gap-y-10 m-5">
+                                    @for (field of this.outputsTypesForm[selectedOutputType]['parameters']; track field['id']) {
+                                        @if (!field.webservice) {
+                                            @if (field['type'] === 'text' || field['type'] === 'number') {
+                                                <mat-form-field>
+                                                    <mat-label>{{ field['label'] | translate }}</mat-label>
+                                                    <input matInput [value]="field.control.value" [formControl]="field['control']"
+                                                           [type]="field['type']" [placeholder]="field.placeholder" [required]="field['required']">
+                                                    @if (field.control.invalid) {
+                                                        <mat-error>{{ getErrorMessage(field['id'], outputsTypesForm[selectedOutputType]['parameters']) }}</mat-error>
+                                                    }
+                                                    @if (field['hint']) {
+                                                        <span class="absolute text-gray-600 top-0.5 -right-2 cursor-help" [matTooltip]="field['hint']">
+                                                            <i class="fa-solid fa-circle-question text-md"></i>
+                                                        </span>
+                                                    }
+                                                    @if (field['hint']) {
+                                                        <span class="absolute text-gray-600 top-0.5 -right-2 cursor-help"
+                                                              [matTooltip]="field['hint']">
+                                                            <i class="fa-solid fa-circle-question text-md"></i>
+                                                        </span>
+                                                    }
+                                                </mat-form-field>
+                                            } @else if (field['type'] === 'textarea') {
+                                                <mat-form-field class="col-span-4">
+                                                    <mat-label>{{ field['label'] | translate }}</mat-label>
+                                                    <textarea matInput [value]="field.control.value"
+                                                              [formControl]="field['control']" [type]="field['type']" [placeholder]="field.placeholder"
+                                                              [required]="field['required']"  rows="14" spellcheck="false"></textarea>
+                                                    @if (field.control.invalid) {
+                                                        <mat-error>{{ getErrorMessage(field['id'], outputsTypesForm[selectedOutputType]['parameters']) }}</mat-error>
+                                                    }
+                                                    @if (field['hint']) {
+                                                        <span class="absolute text-gray-600 top-0.5 -right-2 cursor-help" [matTooltip]="field['hint']">
+                                                            <i class="fa-solid fa-circle-question text-md"></i>
+                                                        </span>
+                                                    }
+                                                </mat-form-field>
+                                            }
+                                        } @else {
+                                            @if (field['type'] === 'text' || field['type'] === 'number') {
+                                                <mat-form-field (focusin)="retrieveDataFromWS(field['id'])">
+                                                    <mat-label>{{ field['label'] | translate }}</mat-label>
+                                                    <input matInput [formControl]="field['control']" [type]="field['type']"
+                                                           [readonly]="field.webservice && !this.connection"
+                                                           [placeholder]="field.placeholder" [required]="field['required']" [matAutocomplete]="autocomplete">
+                                                    @if (field.webservice && !this.connection) {
+                                                        <mat-error>{{ 'OUTPUT.check_connection_before' | translate }}</mat-error>
+                                                    }
+                                                    @if (field['hint']) {
+                                                        <span class="absolute text-gray-600 top-0.5 -right-2 cursor-help" [matTooltip]="field['hint']">
+                                                            <i class="fa-solid fa-circle-question text-md"></i>
+                                                        </span>
+                                                    }
+                                                    <mat-autocomplete #autocomplete="matAutocomplete" [displayWith]="displayFn">
+                                                        <mat-option *ngFor="let option of field.filteredOptions | async" [value]="option">
+                                                            <span [innerHTML]="option.value | highlight: toHighlight"></span>
+                                                            <span style="font-size: 12px;" class="text-green-400 ml-3">{{ option.extra }}</span>
+                                                        </mat-option>
+                                                    </mat-autocomplete>
+                                                </mat-form-field>
+                                            }
+                                        }
+                                        @if (field['type'] === 'select') {
+                                            <mat-form-field>
+                                                <mat-label>{{ field['label'] | translate }}</mat-label>
+                                                <mat-select [name]="field['id']" [id]="field['id']" [(ngModel)]="field.control.value">
+                                                    @for (option of field['values']; track option['value']) {
+                                                        <mat-option [value]="option['value']">
+                                                            {{ option['label'] | translate }}
+                                                        </mat-option>
+                                                    }
+                                                </mat-select>
+                                                @if (field['hint']) {
+                                                    <span class="absolute text-gray-600 top-0.5 -right-2 cursor-help" [matTooltip]="field['hint']">
+                                                        <i class="fa-solid fa-circle-question text-md"></i>
+                                                    </span>
+                                                }
+                                                @if (field.control.invalid) {
+                                                    <mat-error>{{ getErrorMessage(field['id'], outputForm) }}</mat-error>
+                                                }
+                                            </mat-form-field>
+                                        }
+                                    }
+                                </div>
+                            </mat-tab>
+                        </mat-tab-group>
+                    </form>
+                }
+            </div>
+        </div>
+    </mat-sidenav-content>
+    <mat-sidenav #sidenav2 mode="side" [opened]="true" position="end" class="available-fields w-1/5 flex flex-col h-full border-r border-green-400">
+        <h3 class="bg-green-400/60 text-center text-gray-900 m-0 p-4">
+            {{ "FORMS.available_fields" | translate }}
+        </h3>
+        <mat-divider class="border-green-400"></mat-divider>
+        @if (this.loadingCustomFields) {
+            <div class="flex text-gray-400 object-contain h-full-overflow">
+                <div class="m-auto text-center">
+                    <i class="fa-solid fa-code fa-4x fa-beat-fade w-full mb-2"></i>
+                    <span class="w-full">
+                        {{ 'OUTPUT.loading_custom_fields' | translate }}
+                    </span>
+                </div>
+            </div>
+        } @else {
+            <div class="overflow-x-hidden overflow-y-auto h-full-overflow">
+                @for (field of this.availableFields; track field; let cpt = $index) {
+                    <div class="my-8 mx-2 text-base">
+                        {{ field['label'] | translate }}
+                        <span class="text-green-400 ml-3 text-xs" [class.cursor-pointer]="cpt !== 0"
+                              (click)="cpt !== 0 ? this.clipboard.copy(field['labelShort']) : ''" [matTooltip]="cpt === 0 ? '' : 'OUTPUT.copy_technical_id' | translate">
+                            {{ field['labelShort'] | translate }} @if (field.module == 'verifier') {(custom_{{ field['id'] }})}
+                        </span>
+                        @if (cpt === 0) {
+                            <mat-divider class="border-green-400 mt-4"></mat-divider>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </mat-sidenav>
+</mat-sidenav-container>

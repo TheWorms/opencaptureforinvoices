@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,21 +11,54 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
+# @dev : Oussama BRICH <oussama.brich@edissyum.com>
 
+import json
+from flask import request
 from flask_babel import gettext
-from src.backend.import_models import roles
-from src.backend.main import create_classes_from_current_config
+from src.backend.models import roles, history, user
 
 
 def get_roles(args):
-    _vars = create_classes_from_current_config()
-    _config = _vars[0]
+    _args = {
+        'select': ['*', 'count(*) OVER() as total'],
+        'offset': args['offset'],
+        'limit': args['limit']
+    }
 
-    _roles = roles.get_roles(args)
+    if args['full']:
+        _args['where'] = ['status NOT IN (%s)']
+        _args['data'] = ['DEL']
+    else:
+        user_info, error = user.get_user_by_id({'user_id': args['user_id']})
+        if error:
+            response = {
+                "errors": gettext('GET_USER_BY_ID_ERROR'),
+                "message": error
+            }
+            return response, 400
+        user_role, error = roles.get_role_by_id({
+            'where': ['id = %s', "status NOT IN (%s)"],
+            'data': [user_info['role'], 'DEL']
+        })
+        if error:
+            response = {
+                "errors": gettext('GET_ROLE_BY_ID_ERROR'),
+                "message": error
+            }
+            return response, 400
+
+        if user_role['label_short'] == 'superadmin':
+            _args['where'] = ['status NOT IN (%s)', 'editable <> %s']
+            _args['data'] = ['DEL', 'false']
+        else:
+            _args['where'] = ['id = ANY(%s)', 'status NOT IN (%s)', 'editable <> %s']
+            _args['data'] = [user_role['assign_roles'], 'DEL', 'false']
+
+    _roles = roles.get_roles(_args)
 
     response = {
         "roles": _roles
@@ -33,47 +67,59 @@ def get_roles(args):
 
 
 def update_role(role_id, data):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    role_info, error = roles.get_role_by_id({'role_id': role_id})
-
+    _, error = roles.get_role_by_id({'role_id': role_id})
     if error is None:
         _set = {
             'label': data['label'],
+            'enabled': data['enabled'],
             'label_short': data['label_short'],
-            'enabled': data['enabled']
+            'default_route': data['default_route'] if 'default_route' in data else '',
+            'assign_roles': json.dumps(data['assign_roles'])
         }
 
-        res, error = roles.update_role({'set': _set, 'role_id': role_id})
+        _, error = roles.update_role({'set': _set, 'role_id': role_id})
 
         if error is None:
+            history.add_history({
+                'module': 'general',
+                'ip': request.remote_addr,
+                'submodule': 'update_role',
+                'user_info': request.environ['user_info'],
+                'desc': gettext('UPDATE_ROLE', role=data['label'])
+            })
             return '', 200
         else:
             response = {
                 "errors": gettext('UPDATE_ROLE_ERROR'),
-                "message": error
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
     else:
         response = {
             "errors": gettext('UPDATE_ROLE_ERROR'),
-            "message": error
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
 def create_role(data):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-
     _columns = {
         'label': data['label'],
         'label_short': data['label_short'],
+        'default_route': data['default_route'] if 'default_route' in data else '',
+        'assign_roles': json.dumps(data['assign_roles'])
     }
 
     res, error = roles.create_role({'columns': _columns})
 
     if error is None:
+        history.add_history({
+            'module': 'general',
+            'ip': request.remote_addr,
+            'submodule': 'create_role',
+            'user_info': request.environ['user_info'],
+            'desc': gettext('CREATE_ROLE', role=data['label'])
+        })
         response = {
             "id": res
         }
@@ -82,37 +128,35 @@ def create_role(data):
     else:
         response = {
             "errors": gettext('CREATE_ROLE_ERROR'),
-            "message": error
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
 def update_role_privilege(role_id, privileges):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    role_info, error = roles.get_role_by_id({'role_id': role_id})
+    _, error = roles.get_role_by_id({'role_id': role_id})
 
     if error is None:
         _set = {
-            'privileges_id': '{"data": "' + str(privileges) + '"}',
+            'privileges_id': '{"data": "' + str(privileges) + '"}'
         }
 
-        res, error = roles.update_role_privileges({'set': _set, 'role_id': role_id})
+        _, error = roles.update_role_privileges({'set': _set, 'role_id': role_id})
 
         if error is None:
             return '', 200
         else:
             response = {
                 "errors": gettext('UPDATE_ROLE_ERROR'),
-                "message": error
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
     else:
         response = {
             "errors": gettext('UPDATE_ROLE_ERROR'),
-            "message": error
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
 def get_role_by_id(role_id):
@@ -123,75 +167,73 @@ def get_role_by_id(role_id):
     else:
         response = {
             "errors": gettext('GET_ROLE_BY_ID_ERROR'),
-            "message": error
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
 def delete_role(role_id):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-
     role_info, error = roles.get_role_by_id({'role_id': role_id})
     if error is None:
-        res, error = roles.update_role({'set': {'status': 'DEL'}, 'role_id': role_id})
+        _, error = roles.update_role({'set': {'status': 'DEL'}, 'role_id': role_id})
         if error is None:
+            history.add_history({
+                'module': 'general',
+                'ip': request.remote_addr,
+                'submodule': 'delete_role',
+                'user_info': request.environ['user_info'],
+                'desc': gettext('DELETE_ROLE', role=role_info['label'])
+            })
             return '', 200
         else:
             response = {
                 "errors": gettext('DELETE_ROLE_ERROR'),
-                "message": error
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
     else:
         response = {
             "errors": gettext('DELETE_ROLE_ERROR'),
-            "message": error
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
 def disable_role(role_id):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-
-    role_info, error = roles.get_role_by_id({'role_id': role_id})
+    _, error = roles.get_role_by_id({'role_id': role_id})
     if error is None:
-        res, error = roles.update_role({'set': {'enabled': False}, 'role_id': role_id})
+        _, error = roles.update_role({'set': {'enabled': False}, 'role_id': role_id})
         if error is None:
             return '', 200
         else:
             response = {
                 "errors": gettext('DISABLE_ROLE_ERROR'),
-                "message": error
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
     else:
         response = {
             "errors": gettext('DISABLE_ROLE_ERROR'),
-            "message": error
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
 def enable_role(role_id):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-
-    role_info, error = roles.get_role_by_id({'role_id': role_id})
+    _, error = roles.get_role_by_id({'role_id': role_id})
     if error is None:
-        res, error = roles.update_role({'set': {'enabled': True}, 'role_id': role_id})
+        _, error = roles.update_role({'set': {'enabled': True}, 'role_id': role_id})
         if error is None:
             return '', 200
         else:
             response = {
                 "errors": gettext('ENABLE_ROLE_ERROR'),
-                "message": error
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
     else:
         response = {
             "errors": gettext('ENABLE_ROLE_ERROR'),
-            "message": error
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400

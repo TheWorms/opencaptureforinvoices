@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
-Open-Capture for Invoices is free software: you can redistribute it and/or modify
+Open-Capture is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
@@ -11,38 +11,36 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
-@dev : Nathan Cheval <nathan.cheval@outlook.fr> */
+ @dev : Nathan Cheval <nathan.cheval@outlook.fr>
+ @dev : Oussama Brich <oussama.brich@edissyum.com>  */
 
-import {Component, OnInit} from '@angular/core';
-import {HttpClient, HttpHeaders} from "@angular/common/http";
-import {ActivatedRoute, Router} from "@angular/router";
-import {FormBuilder} from "@angular/forms";
-import {AuthService} from "../../../../../services/auth.service";
-import {UserService} from "../../../../../services/user.service";
-import {TranslateService} from "@ngx-translate/core";
-import {NotificationService} from "../../../../../services/notifications/notifications.service";
-import {MatDialog} from "@angular/material/dialog";
-import {LastUrlService} from "../../../../../services/last-url.service";
-import {LocalStorageService} from "../../../../../services/local-storage.service";
-import {API_URL} from "../../../../env";
-import {catchError, finalize, tap} from "rxjs/operators";
-import {of} from "rxjs";
-import {Sort} from "@angular/material/sort";
-import {ConfirmDialogComponent} from "../../../../../services/confirm-dialog/confirm-dialog.component";
-import {SettingsService} from "../../../../../services/settings.service";
-import {PrivilegesService} from "../../../../../services/privileges.service";
-import {MAT_FORM_FIELD_DEFAULT_OPTIONS} from "@angular/material/form-field";
-import {HistoryService} from "../../../../../services/history.service";
+import { Component, OnInit } from '@angular/core';
+import { HttpClient, HttpHeaders } from "@angular/common/http";
+import { Router } from "@angular/router";
+import { AuthService } from "../../../../../services/auth.service";
+import { UserService } from "../../../../../services/user.service";
+import { _, TranslateService } from "@ngx-translate/core";
+import { NotificationService } from "../../../../../services/notifications/notifications.service";
+import { MatDialog } from "@angular/material/dialog";
+import { SessionStorageService } from "../../../../../services/session-storage.service";
+import { environment } from  "../../../../env";
+import { catchError, finalize, tap } from "rxjs/operators";
+import { of } from "rxjs";
+import { Sort } from "@angular/material/sort";
+import { ConfirmDialogComponent } from "../../../../../services/confirm-dialog/confirm-dialog.component";
+import { SettingsService } from "../../../../../services/settings.service";
+import { PrivilegesService } from "../../../../../services/privileges.service";
+import { MAT_FORM_FIELD_DEFAULT_OPTIONS } from "@angular/material/form-field";
 
 @Component({
     selector: 'app-roles-list',
     templateUrl: './roles-list.component.html',
-    styleUrls: ['./roles-list.component.scss'],
     providers: [
-        { provide: MAT_FORM_FIELD_DEFAULT_OPTIONS, useValue: { appearance: 'fill' } },
-    ]
+        { provide: MAT_FORM_FIELD_DEFAULT_OPTIONS, useValue: { appearance: 'fill' } }
+    ],
+    standalone: false
 })
 
 export class RolesListComponent implements OnInit {
@@ -59,38 +57,35 @@ export class RolesListComponent implements OnInit {
         public router: Router,
         private http: HttpClient,
         private dialog: MatDialog,
-        private route: ActivatedRoute,
         public userService: UserService,
-        private formBuilder: FormBuilder,
         private authService: AuthService,
         private translate: TranslateService,
         private notify: NotificationService,
-        private historyService: HistoryService,
         public serviceSettings: SettingsService,
-        private routerExtService: LastUrlService,
         public privilegesService: PrivilegesService,
-        private localeStorageService: LocalStorageService,
+        private sessionStorageService: SessionStorageService
     ) {
     }
 
     ngOnInit(): void {
         this.serviceSettings.init();
-        // If we came from anoter route than profile or settings panel, reset saved settings before launch loadUsers function
-        const lastUrl = this.routerExtService.getPreviousUrl();
-        if (lastUrl.includes('settings/general/roles') || lastUrl === '/') {
-            if (this.localeStorageService.get('rolesPageIndex'))
-                this.pageIndex = parseInt(this.localeStorageService.get('rolesPageIndex') as string);
-            this.offset = this.pageSize * (this.pageIndex);
-        } else
-            this.localeStorageService.remove('rolesPageIndex');
+        this.userService.user   = this.userService.getUserFromLocal();
+
+        if (this.sessionStorageService.get('rolesPageIndex')) {
+            this.pageIndex = parseInt(this.sessionStorageService.get('rolesPageIndex') as string);
+        }
+        this.offset = this.pageSize * (this.pageIndex);
+
         this.loadRoles();
     }
 
     loadRoles(): void {
-        this.http.get(API_URL + '/ws/roles/list?limit=' + this.pageSize + '&offset=' + this.offset, {headers: this.authService.headers}).pipe(
-            tap((data: any) => {
-                if (data.roles[0]) this.total = data.roles[0].total;
-                else if (this.pageIndex !== 0) {
+        this.http.get(environment['url'] + '/ws/roles/list/user/' + this.userService.user.id  +
+            '?limit=' + this.pageSize + '&offset=' + this.offset, {headers: this.authService.headers}).pipe(
+                tap((data: any) => {
+                if (data.roles[0]) {
+                    this.total = data.roles[0].total;
+                } else if (this.pageIndex !== 0) {
                     this.pageIndex = this.pageIndex - 1;
                     this.offset = this.pageSize * (this.pageIndex);
                     this.loadRoles();
@@ -110,7 +105,7 @@ export class RolesListComponent implements OnInit {
         this.pageSize = event.pageSize;
         this.offset = this.pageSize * (event.pageIndex);
         this.pageIndex = event.pageIndex;
-        this.localeStorageService.save('rolesPageIndex', event.pageIndex);
+        this.sessionStorageService.save('rolesPageIndex', event.pageIndex);
         this.loadRoles();
     }
 
@@ -121,20 +116,17 @@ export class RolesListComponent implements OnInit {
                 confirmText: this.translate.instant('ROLE.confirm_delete', {"role": role}),
                 confirmButton: this.translate.instant('GLOBAL.delete'),
                 confirmButtonColor: "warn",
-                cancelButton: this.translate.instant('GLOBAL.cancel'),
+                cancelButton: this.translate.instant('GLOBAL.cancel')
             },
-            width: "600px",
+            width: "600px"
         });
 
         dialogRef.afterClosed().subscribe(result => {
             if (result) {
                 this.deleteRole(roleId);
-                this.historyService.addHistory('verifier', 'delete_role', this.translate.instant('HISTORY-DESC.delete-role', {role: role}));
             }
         });
     }
-
-
 
     disableConfirmDialog(roleId: number, role: string) {
         const dialogRef = this.dialog.open(ConfirmDialogComponent, {
@@ -143,9 +135,9 @@ export class RolesListComponent implements OnInit {
                 confirmText: this.translate.instant('ROLE.confirm_disable', {"role": role}),
                 confirmButton: this.translate.instant('GLOBAL.disable'),
                 confirmButtonColor: "warn",
-                cancelButton: this.translate.instant('GLOBAL.cancel'),
+                cancelButton: this.translate.instant('GLOBAL.cancel')
             },
-            width: "600px",
+            width: "600px"
         });
 
         dialogRef.afterClosed().subscribe(result => {
@@ -162,9 +154,9 @@ export class RolesListComponent implements OnInit {
                 confirmText: this.translate.instant('ROLE.confirm_enable', {"role": role}),
                 confirmButton: this.translate.instant('GLOBAL.enable'),
                 confirmButtonColor: "warn",
-                cancelButton: this.translate.instant('GLOBAL.cancel'),
+                cancelButton: this.translate.instant('GLOBAL.cancel')
             },
-            width: "600px",
+            width: "600px"
         });
 
         dialogRef.afterClosed().subscribe(result => {
@@ -176,7 +168,7 @@ export class RolesListComponent implements OnInit {
 
     deleteRole(roleId: number) {
         if (roleId !== undefined) {
-            this.http.delete(API_URL + '/ws/roles/delete/' + roleId, {headers: this.authService.headers}).pipe(
+            this.http.delete(environment['url'] + '/ws/roles/delete/' + roleId, {headers: this.authService.headers}).pipe(
                 tap(() => {
                     this.loadRoles();
                     this.notify.success(this.translate.instant('ROLE.role_deleted'));
@@ -192,7 +184,7 @@ export class RolesListComponent implements OnInit {
 
     disableRole(roleId: number) {
         if (roleId !== undefined) {
-            this.http.put(API_URL + '/ws/roles/disable/' + roleId, null, {headers: this.authService.headers}).pipe(
+            this.http.put(environment['url'] + '/ws/roles/disable/' + roleId, null, {headers: this.authService.headers}).pipe(
                 tap(() => {
                     this.loadRoles();
                 }),
@@ -207,7 +199,7 @@ export class RolesListComponent implements OnInit {
 
     enableRole(roleId: number) {
         if (roleId !== undefined) {
-            this.http.put(API_URL + '/ws/roles/enable/' + roleId, null, {headers: this.authService.headers}).pipe(
+            this.http.put(environment['url'] + '/ws/roles/enable/' + roleId, null, {headers: this.authService.headers}).pipe(
                 tap(() => {
                     this.loadRoles();
                 }),

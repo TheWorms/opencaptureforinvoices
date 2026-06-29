@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,21 +11,31 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 
 from flask_babel import gettext
-from src.backend.import_models import status
-from src.backend.main import create_classes_from_current_config
+from src.backend.controllers import user
+from src.backend.models import status, verifier
 
 
-def get_status(module):
-    _vars = create_classes_from_current_config()
-    _config = _vars[1]
-
+def get_status(args, module):
     _status, error = status.get_status(module)
+
+    if 'totals' in args and args['totals']:
+        for stat in _status:
+            allowed_customers, _ = user.get_customers_by_user_id(args['user_id'])
+            allowed_customers.append(0)  # Update allowed customers to add Unspecified customers
+            total = verifier.get_totals({
+                'time': args['time'],
+                'status': stat['id'],
+                'form_id': args['form_id'],
+                'user_id': args['user_id'],
+                'allowedCustomers': allowed_customers
+            })[0]
+            stat['total'] = total
+
     if _status:
         response = {
             "status": _status
@@ -33,6 +44,6 @@ def get_status(module):
     else:
         response = {
             "errors": gettext("RETRIEVES_STATUS_ERROR"),
-            "message": error
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400

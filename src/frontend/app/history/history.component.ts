@@ -1,37 +1,57 @@
+/** This file is part of Open-Capture.
+
+ Open-Capture is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ Open-Capture is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+
+ @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
+
 import { Component, OnInit } from '@angular/core';
-import {SettingsService} from "../../services/settings.service";
-import {TranslateService} from "@ngx-translate/core";
-import {FormControl} from "@angular/forms";
-import {API_URL} from "../env";
-import {catchError, finalize, map, startWith, tap} from "rxjs/operators";
-import {Observable, of} from "rxjs";
-import {HttpClient} from "@angular/common/http";
-import {AuthService} from "../../services/auth.service";
-import {NotificationService} from "../../services/notifications/notifications.service";
-import {Sort} from "@angular/material/sort";
+import { SettingsService } from "../../services/settings.service";
+import { _, TranslateService } from "@ngx-translate/core";
+import { FormControl } from "@angular/forms";
+import { environment } from  "../env";
+import { catchError, finalize, map, startWith, tap } from "rxjs/operators";
+import { Observable, of } from "rxjs";
+import { HttpClient } from "@angular/common/http";
+import { AuthService } from "../../services/auth.service";
+import { NotificationService } from "../../services/notifications/notifications.service";
+import { Sort } from "@angular/material/sort";
 import { DatePipe } from '@angular/common';
-import * as moment from "moment";
+import { UserService } from "../../services/user.service";
+import moment from "moment";
 
 @Component({
     selector: 'app-history',
     templateUrl: './history.component.html',
     styleUrls: ['./history.component.scss'],
-    providers: [DatePipe]
+    providers: [DatePipe],
+    standalone: false
 })
 export class HistoryComponent implements OnInit {
-    filteredUsers       : Observable<any> | undefined;
     columnsToDisplay    : string[] = ['id', 'history_module', 'history_submodule', 'history_date', 'user_info', 'history_desc', 'user_ip'];
+    filteredUsers       : Observable<any> = new Observable();
     loading             : boolean  = true;
     toHighlight         : string   = '';
     pageSize            : number   = 10;
     pageIndex           : number   = 0;
     total               : number   = 0;
     offset              : number   = 0;
-    history             : any;
-    users               : any;
     userSelected        : string = '';
     moduleSelected      : string = '';
     subModuleSelected   : string = '';
+    history             : any;
+    allHistory          : any;
+    users               : any;
     form                : any[]    = [
         {
             'id': 'user_id',
@@ -42,7 +62,7 @@ export class HistoryComponent implements OnInit {
         },
         {
             'id': 'module',
-            'label': this.translate.instant('HISTORY.module'),
+            'label': this.translate.instant('CUSTOM-FIELDS.module'),
             'type': 'select',
             'control': new FormControl(),
             'values': [
@@ -70,35 +90,43 @@ export class HistoryComponent implements OnInit {
             'label': this.translate.instant('HISTORY.submodule'),
             'control': new FormControl(),
             'values': []
-        },
+        }
     ];
 
     constructor(
         private http: HttpClient,
         private datePipe: DatePipe,
+        private userService: UserService,
         private authService: AuthService,
         private notify: NotificationService,
         private translate: TranslateService,
-        public serviceSettings: SettingsService,
+        public serviceSettings: SettingsService
     ) {}
 
     private _filter(value: any, array: any) {
         if (typeof value === 'string') {
             this.toHighlight = value;
             const filterValue = value.toLowerCase();
-            return array.filter((option: any) => option.value.toLowerCase().indexOf(filterValue) !== -1);
-        }else {
-            return array;
+            return array.filter((option: any) => option.lastname.toLowerCase().indexOf(filterValue) !== -1 || option.firstname.toLowerCase().indexOf(filterValue) !== -1 || option.username.toLowerCase().indexOf(filterValue) !== -1);
         }
+        return array;
     }
 
     ngOnInit(): void {
-        this.http.get(API_URL + '/ws/users/list_full', {headers: this.authService.headers}).pipe(
+        if (!this.authService.headersExists) {
+            this.authService.generateHeaders();
+        }
+
+        if (!this.userService.user.id) {
+            this.userService.user = this.userService.getUserFromLocal();
+        }
+
+        this.http.get(environment['url'] + '/ws/users/list_full', {headers: this.authService.headers}).pipe(
             tap((data: any) => {
                 this.users = [];
                 this.form.forEach((element: any) => {
                     if (element.id === 'user_id') {
-                        this.http.get(API_URL + '/ws/history/users', {headers: this.authService.headers}).pipe(
+                        this.http.get(environment['url'] + '/ws/history/users', {headers: this.authService.headers}).pipe(
                             tap((userHistory: any) => {
                                 userHistory.history.forEach((_user: any) => {
                                     data.users.forEach((user: any) => {
@@ -114,13 +142,12 @@ export class HistoryComponent implements OnInit {
                                 return of(false);
                             })
                         ).subscribe();
-                        this.filteredUsers = element.control.valueChanges
-                            .pipe(
-                                startWith(''),
-                                map(option => option ? this._filter(option, this.users) : this.users)
-                            );
+                        this.filteredUsers = element.control.valueChanges.pipe(
+                            startWith(''),
+                            map(option => option ? this._filter(option, this.users) : this.users)
+                        );
                     } else if (element.id === 'submodule') {
-                        this.http.get(API_URL + '/ws/history/submodules', {headers: this.authService.headers}).pipe(
+                        this.http.get(environment['url'] + '/ws/history/submodules', {headers: this.authService.headers}).pipe(
                             tap((data: any) => {
                                 element.values = data['history'];
                             }),
@@ -143,11 +170,24 @@ export class HistoryComponent implements OnInit {
     }
 
     loadHistory() {
+        this.http.get(environment['url'] + '/ws/history/list?user=' + this.userSelected + '&submodule=' + this.subModuleSelected + '&module=' + this.moduleSelected, {headers: this.authService.headers}).pipe(
+            tap((data: any) => {
+                this.allHistory = data.history;
+            }),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
+
         this.http.get(
-            API_URL + '/ws/history/list?limit=' + this.pageSize + '&offset=' + this.offset + '&user=' + this.userSelected + '&submodule=' + this.subModuleSelected + '&module=' + this.moduleSelected,
+            environment['url'] + '/ws/history/list?limit=' + this.pageSize + '&offset=' + this.offset + '&user=' + this.userSelected + '&submodule=' + this.subModuleSelected + '&module=' + this.moduleSelected,
             {headers: this.authService.headers}).pipe(
             tap((data: any) => {
-                if (data.history[0]) this.total = data.history[0].total;
+                if (data.history[0]) {
+                    this.total = data.history[0].total;
+                }
                 this.history = data.history;
                 this.form.forEach((element: any) => {
                     if (element.id === 'module') {
@@ -160,7 +200,7 @@ export class HistoryComponent implements OnInit {
                         });
                     }
                     if (element.id === 'submodule') {
-                        this.http.get(API_URL + '/ws/history/submodules?module=' + this.moduleSelected, {headers: this.authService.headers}).pipe(
+                        this.http.get(environment['url'] + '/ws/history/submodules?module=' + this.moduleSelected, {headers: this.authService.headers}).pipe(
                             tap((data: any) => {
                                 element.values = data['history'];
                             }),
@@ -234,9 +274,9 @@ export class HistoryComponent implements OnInit {
     }
 
     sortData(sort: Sort) {
-        const data = this.history.slice();
+        const data = this.allHistory.slice();
         if (!sort.active || sort.direction === '') {
-            this.history = data;
+            this.history = data.splice(0, this.pageSize);
             return;
         }
 
@@ -245,14 +285,15 @@ export class HistoryComponent implements OnInit {
             switch (sort.active) {
                 case 'id': return this.compare(a.id, b.id, isAsc);
                 case 'history_module': return this.compare(a.history_module, b.history_module, isAsc);
-                case 'history_submodule': return this.compare(a.history_submodule, b.history_submodule, isAsc);
+                case 'history_submodule': return this.compare(a['history_submodule'], b['history_submodule'], isAsc);
                 case 'history_date': return this.compare(a.history_date, b.history_date, isAsc);
                 case 'user_info': return this.compare(a.user_info, b.user_info, isAsc);
-                case 'history_desc': return this.compare(a.history_desc, b.history_desc, isAsc);
-                case 'user_ip': return this.compare(a.user_ip, b.user_ip, isAsc);
+                case 'history_desc': return this.compare(a['history_desc'], b['history_desc'], isAsc);
+                case 'user_ip': return this.compare(a['user_ip'], b['user_ip'], isAsc);
                 default: return 0;
             }
         });
+        this.history = this.history.splice(0, this.pageSize);
     }
 
     compare(a: number | string, b: number | string, isAsc: boolean) {

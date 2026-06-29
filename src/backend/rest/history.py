@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,20 +11,36 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 
-from src.backend.import_controllers import auth, history
+
+from flask_babel import gettext
 from flask import Blueprint, request, make_response, jsonify
-from src.backend.main import create_classes_from_current_config
+
+from src.backend.functions import rest_validator
+from src.backend.controllers import auth, history, privileges
 
 bp = Blueprint('history', __name__, url_prefix='/ws/')
 
 
 @bp.route('history/add', methods=['POST'])
 def add_history():
+    check, message = rest_validator(request.json, [
+        {'id': 'desc', 'type': str, 'mandatory': True},
+        {'id': 'module', 'type': str, 'mandatory': True},
+        {'id': 'user_id', 'type': int, 'mandatory': True},
+        {'id': 'user_info', 'type': str, 'mandatory': True},
+        {'id': 'submodule', 'type': str, 'mandatory': True}
+    ])
+
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
     data = request.json
     data['ip'] = request.remote_addr
     res = history.add_history(data)
@@ -33,56 +50,63 @@ def add_history():
 @bp.route('history/list', methods=['GET'])
 @auth.token_required
 def get_history():
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1]
+    if not privileges.has_privileges(request.environ['user_id'], ['history | statistics']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/history/list'}), 403
 
-    if _cfg.cfg['LOCALE']['locale'] == 'fra':
-        _format = 'DD/MM/YYYY HH24:MI:SS'
-    else:
-        _format = 'MM/DD/YYYY HH24:MI:SS'
+    check, message = rest_validator(request.args, [
+        {'id': 'user', 'type': str, 'mandatory': False},
+        {'id': 'year', 'type': int, 'mandatory': False},
+        {'id': 'limit', 'type': int, 'mandatory': False},
+        {'id': 'offset', 'type': int, 'mandatory': False},
+        {'id': 'module', 'type': str, 'mandatory': False},
+        {'id': 'submodule', 'type': str, 'mandatory': False}
+    ])
 
-    args = {
-        'select': ['*', 'count(*) OVER() as total', "to_char(history_date, '" + _format + "') as date"],
-        'offset': request.args['offset'] if 'offset' in request.args else '',
-        'limit': request.args['limit'] if 'limit' in request.args else '',
-        'order_by': ['id DESC']
-    }
-    where = []
-    data = []
-    if 'user' in request.args and request.args['user']:
-        where.append('user_id = %s')
-        data.append(request.args['user'])
-    if 'submodule' in request.args and request.args['submodule']:
-        where.append('history_submodule = %s')
-        data.append(request.args['submodule'])
-    if 'module' in request.args and request.args['module']:
-        where.append('history_module = %s')
-        data.append(request.args['module'])
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
 
-    if where:
-        args.update({'where': where, 'data': data})
-    _history = history.get_history(args)
+    _history = history.get_history(request.args)
     return make_response(jsonify(_history[0])), _history[1]
 
 
 @bp.route('history/submodules', methods=['GET'])
 @auth.token_required
 def get_history_submodules():
-    args = {
-        'select': ['DISTINCT(history_submodule)'],
-    }
+    if not privileges.has_privileges(request.environ['user_id'], ['history']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/history/submodules'}), 403
 
-    if 'module' in request.args and request.args['module']:
-        args.update({'where':  ['history_module = %s'], 'data': [request.args['module']]})
-    _history = history.get_history(args)
+    check, message = rest_validator(request.args, [
+        {'id': 'module', 'type': str, 'mandatory': False}
+    ])
+
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    _history = history.get_history_submodules(request.args)
     return make_response(jsonify(_history[0])), _history[1]
 
 
 @bp.route('history/users', methods=['GET'])
 @auth.token_required
 def get_history_users():
-    args = {
-        'select': ['DISTINCT(user_id)'],
-    }
-    _history = history.get_history(args)
+    if not privileges.has_privileges(request.environ['user_id'], ['history']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/history/users'}), 403
+
+    _history = history.get_history_users()
+    return make_response(jsonify(_history[0])), _history[1]
+
+
+@bp.route('history/getAvailableYears', methods=['GET'])
+@auth.token_required
+def get_available_years():
+    if not privileges.has_privileges(request.environ['user_id'], ['history']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/history/users'}), 403
+
+    _history = history.get_available_years()
     return make_response(jsonify(_history[0])), _history[1]

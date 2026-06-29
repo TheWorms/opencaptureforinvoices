@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,27 +11,50 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 
 import os
 import sys
 import argparse
-from src.backend.main import launch
+from src.backend import app
+from src.backend.functions import retrieve_config_from_custom_id
+from src.backend.main import launch, create_classes_from_custom_id
 
-# construct the argument parse and parse the arguments
 ap = argparse.ArgumentParser()
-ap.add_argument("-f", "--file", required=False, help="Path to file")
-ap.add_argument("-c", "--config", required=True, help="Path to config.xml")
-ap.add_argument("-input_id", "--input_id", required=True, help="Identifier of the input chain")
+ap.add_argument("-f", "--file", required=True, help="Path to file")
+ap.add_argument("-c", "--custom-id", required=True, help="Identifier of the custom")
+ap.add_argument("-workflow_id", "--workflow_id", required=False, help="Identifier of the workflow chain")
 args = vars(ap.parse_args())
 
 if args['file'] is None:
     sys.exit('The file parameter is mandatory')
 
-if not os.path.exists(args['config']):
-    sys.exit('Config file couldn\'t be found')
+if not retrieve_config_from_custom_id(args['custom_id']):
+    sys.exit('Custom config file couldn\'t be found')
 
-launch(args)
+if args['workflow_id'] is None:
+    sys.exit('The  workflow_id parameter is mandatory')
+
+with app.app_context():
+    _vars = create_classes_from_custom_id(args['custom_id'])
+    database = _vars[0]
+
+    args['source'] = 'cli'
+    args['task_id_monitor'] = database.insert({
+        'table': 'monitoring',
+        'columns': {
+            'status': 'wait',
+            'module': 'verifier',
+            'filename': os.path.basename(args['file']),
+            'workflow_id': args['workflow_id'] if args['workflow_id'] else None,
+            'source': 'interface'
+        }
+    })
+
+    args['original_filename'] = os.path.basename(args['file'])
+
+    args['user_info'] = 'fs-watcher'
+    args['ip'] = '0.0.0.0'
+    launch(args)

@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,58 +11,158 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 
 import os
+import uuid
 import json
+import zeep
+import magic
 import base64
+import secrets
 import logging
+import tempfile
 import datetime
 import requests
+import traceback
+import importlib
 import pandas as pd
 from PIL import Image
-from xml.dom import minidom
 from flask_babel import gettext
-import xml.etree.ElementTree as Et
 from zeep import Client, exceptions
-from src.backend.main import launch
-from flask import current_app, Response
-from src.backend.main import create_classes_from_current_config
-from src.backend.import_models import verifier, accounts
-from src.backend.import_classes import _Files, _MaarchWebServices
+from src.backend import verifier_exports
+from src.backend.classes.Files import Files
+from werkzeug.datastructures import FileStorage
+from src.backend.classes.Files import rotate_img
+from src.backend.scripting_functions import check_code
+from src.backend.main import launch, create_classes_from_custom_id
+from src.backend.controllers import auth, user, monitoring, history
+from src.backend.models import verifier, accounts, forms, attachments
+from flask import current_app, Response, request, g as current_context
+from src.backend.functions import retrieve_custom_from_url, delete_documents
 
 
-def handle_uploaded_file(files, input_id):
+def upload_documents(body):
+    res = handle_uploaded_file(body['files'], body['workflowId'], None, body['datas'], body['splitter_batch_id'])
+    if res and res[0] is not False:
+        return res, 200
+
+    response = {
+        "errors": gettext('UPLOAD_DOCUMENTS_ERROR'),
+        "message": ""
+    }
+    return response, 400
+
+def retry_from_monitoring(process_id):
+    process, _ = monitoring.get_process_by_id(process_id)
+    if _ != 200:
+        response = {
+            "errors": gettext('RETRY_FROM_MONITORING_ERROR'),
+            "message": gettext('PROCESS_NOT_FOUND')
+        }
+        return response, 400
+
+    process = process['process'][0]
+    if 'docservers' in current_context:
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        docservers = _vars[9]
+
+    path = docservers['ERROR_PATH'] + '/' + process['workflow_id'] + '/' + process['filename']
+    if not os.path.isfile(path):
+        response = {
+            "errors": gettext('RETRY_FROM_MONITORING_ERROR'),
+            "message": gettext('FILE_NOT_FOUND')
+        }
+        return response, 400
+
+    file = FileStorage(stream=open(path, 'rb'), filename=process['filename'])
+    res = handle_uploaded_file([file], process['workflow_id'], {})
+    if res and res[0] is not False:
+        return res
+    else:
+        return gettext('UNKNOW_ERROR'), 400
+
+def handle_uploaded_file(files, workflow_id, supplier, datas=None, splitter_batch_id=False):
+    custom_id = retrieve_custom_from_url(request)
     path = current_app.config['UPLOAD_FOLDER']
+    tokens = []
     for file in files:
-        f = files[file]
-        filename = _Files.save_uploaded_file(f, path)
-        launch({
-            'file': filename,
-            'config': current_app.config['CONFIG_FILE'],
-            'input_id': input_id
+        if isinstance(file, FileStorage):
+            _f = file
+        else:
+            _f = files[file]
+        filename = Files.save_uploaded_file(_f, path)
+
+        now = datetime.datetime.now()
+        year, month, day = [str('%02d' % now.year), str('%02d' % now.month), str('%02d' % now.day)]
+        hour, minute, second, microsecond = [str('%02d' % now.hour), str('%02d' % now.minute), str('%02d' % now.second), str('%02d' % now.microsecond)]
+        date_batch = year + month + day + '_' + hour + minute + second + microsecond
+        token = date_batch + '_' + secrets.token_hex(32) + '_' + str(uuid.uuid4())
+        tokens.append({'filename': os.path.basename(filename), 'token': token})
+
+        task_id_monitor = monitoring.create_process({
+            'status': 'wait',
+            'module': 'verifier',
+            'source': 'interface',
+            'filename': os.path.basename(_f.filename),
+            'token': token,
+            'workflow_id': workflow_id if workflow_id else None
         })
-    return True
+
+        if task_id_monitor:
+            launch({
+                'datas': datas,
+                'file': filename,
+                'supplier': supplier,
+                'custom_id': custom_id,
+                'ip': request.remote_addr,
+                'workflow_id': workflow_id,
+                'splitter_batch_id': splitter_batch_id,
+                'user_id': request.environ['user_id'],
+                'user_info': request.environ['user_info'],
+                'task_id_monitor': task_id_monitor[0]['process'],
+                'original_filename': os.path.basename(_f.filename)
+            })
+        else:
+            return False, 500
+    return tokens, 200
 
 
-def get_invoice_by_id(invoice_id):
-    invoice_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
+def get_document_by_id(document_id):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
     if error is None:
-        return invoice_info, 200
+        return document_info, 200
     else:
         response = {
-            "errors": gettext('GET_INVOICE_BY_ID_ERROR'),
-            "message": error
+            "errors": gettext('GET_DOCUMENT_BY_ID_ERROR'),
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
-def retrieve_invoices(args):
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1]
+def get_document_id_and_status_by_token(token):
+    decoded_token, status = auth.decode_unique_url_token(token)
+    if status == 500:
+        return decoded_token, status
+
+    process, _ = monitoring.get_process_by_token(decoded_token['process_token'])
+
+    if process['process'] and process['process'][0]:
+        return process['process'][0], 200
+    else:
+        response = {
+            "errors": gettext('GET_DOCUMENT_ID_AND_STATUS_BY_TOKEN_ERROR'),
+            "message": gettext('GET_DOCUMENT_ID_AND_STATUS_BY_TOKEN_ERROR_MESSAGE')
+        }
+        return response, 400
+
+
+def retrieve_documents(args):
     if 'where' not in args:
         args['where'] = []
     if 'data' not in args:
@@ -69,11 +170,16 @@ def retrieve_invoices(args):
     if 'select' not in args:
         args['select'] = []
 
-    args['select'].append("DISTINCT(invoices.id) as invoice_id")
-    args['select'].append("to_char(register_date, 'DD-MM-YYY " + gettext('AT') + " HH24:MI:SS') as date")
-    args['select'].append("*")
-    args['table'] = ['invoices']
-    args['left_join'] = []
+    args['table'] = ['documents', 'form_models']
+    args['left_join'] = ['documents.form_id = form_models.id']
+    args['group_by'] = ['documents.id', 'documents.form_id', 'form_models.id']
+
+    args['select'].append("documents.id as document_id")
+    args['select'].append("to_char(register_date, 'DD-MM-YYYY " + gettext('AT') + " HH24:MI:SS') as date")
+    args['select'].append('form_models.label as form_label')
+    args['select'].append("documents.*")
+
+    args['where'].append("datas -> 'api_only' is NULL")
 
     if 'time' in args:
         if args['time'] in ['today', 'yesterday']:
@@ -83,18 +189,41 @@ def retrieve_invoices(args):
             args['where'].append("to_char(register_date, 'YYYY-MM-DD') < to_char(TIMESTAMP 'yesterday', 'YYYY-MM-DD')")
 
     if 'status' in args:
-        args['where'].append('invoices.status = %s')
+        args['where'].append('documents.status = %s')
         args['data'].append(args['status'])
 
+    if 'form_id' in args and args['form_id']:
+        if args['form_id'] == 'no_form':
+            args['where'].append('documents.form_id is NULL')
+        else:
+            args['where'].append('documents.form_id = %s')
+            args['data'].append(args['form_id'])
+
+    if 'user_id' in args and args['user_id']:
+        user_forms = user.get_forms_by_user_id(args['user_id'])
+        if user_forms[1] == 200:
+            user_forms = user_forms[0]
+            args['where'].append('documents.form_id = ANY(%s)')
+            args['data'].append(user_forms)
+
     if 'search' in args and args['search']:
-        args['table'] = ['invoices', 'accounts_supplier']
-        args['left_join'] = ['invoices.supplier_id = accounts_supplier.id']
-        args['group_by'] = ['invoices.id', 'accounts_supplier.id']
+        args['select'].append("documents.form_id as form_id")
+        args['table'].append('accounts_supplier')
+        args['left_join'].append('documents.supplier_id = accounts_supplier.id')
+        args['group_by'].append('accounts_supplier.id')
         args['where'].append(
-            "(LOWER(original_filename) LIKE '%%" + args['search'].lower() +
-            "%%' OR LOWER((datas -> 'invoice_number')::text) LIKE '%%" + args['search'].lower() +
-            "%%' OR LOWER(accounts_supplier.name) LIKE '%%" + args['search'].lower() + "%%')"
+            "(documents.id::text = %s OR "
+            "LOWER(unaccent(original_filename)) LIKE unaccent(%s) OR "
+            "LOWER((datas -> 'invoice_number')::text) LIKE %s OR "
+            "LOWER(unaccent(accounts_supplier.name)) LIKE unaccent(%s) OR "
+            "LOWER(unaccent(accounts_supplier.lastname)) LIKE unaccent(%s))"
         )
+        args['data'].append(args['search'].lower())
+        args['data'].append("%%" + args['search'].lower() + "%%")
+        args['data'].append("%%" + args['search'].lower() + "%%")
+        args['data'].append("%%" + args['search'].lower() + "%%")
+        args['data'].append("%%" + args['search'].lower() + "%%")
+
         args['offset'] = ''
         args['limit'] = ''
 
@@ -107,226 +236,262 @@ def retrieve_invoices(args):
         else:
             args['where'].append('supplier_id IN (' + ','.join(map(str, args['allowedSuppliers'])) + ')')
 
-    if 'purchaseOrSale' in args and args['purchaseOrSale']:
-        args['where'].append('purchase_or_sale = %s')
-        args['data'].append(args['purchaseOrSale'])
+    if 'filter' in args and args['filter']:
+        if args['filter'] not in ['documents.id', 'documents.register_date']:
+            cast = 'text' if args['filter'] not in ['document_date'] else 'timestamp with time zone'
+            args['where'].append(f"documents.datas ->> '{args['filter']}' IS NOT NULL")
+            args['where'].append(f"documents.datas ->> '{args['filter']}' != ''")
+            if args['filter'] == 'document_date':
+                args['where'].append(f"documents.datas ->> '{args['filter']}' != 'Invalid date'")
+                args['where'].append(f"documents.datas ->> '{args['filter']}' ~ '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'")
+            args['filter'] = f"(documents.datas ->> '{args['filter']}')::{cast}"
 
-    total_invoices = verifier.get_total_invoices({
-        'select': ['count(invoices.id) as total'],
+        args['order_by'] = args['filter']
+        if 'order' in args and args['order']:
+            args['order_by'] = [args['filter'] + ' ' + args['order']]
+        else:
+            args['order_by'] = [args['filter'] + ' DESC']
+
+    total_documents = verifier.get_total_documents({
+        'select': ['count(documents.id) as total'],
         'where': args['where'],
         'data': args['data'],
         'table': args['table'],
-        'left_join': args['left_join'],
+        'left_join': args['left_join']
     })
-    if total_invoices not in [0, []]:
-        invoices_list = verifier.get_invoices(args)
-        for invoice in invoices_list:
-            thumb = get_file_content(_cfg.cfg['GLOBAL']['fullpath'], invoice['full_jpg_filename'], 'image/jpeg',
-                                     compress=True)
-            invoice['thumb'] = str(base64.b64encode(thumb.get_data()).decode('UTF-8'))
-            if invoice['supplier_id']:
-                supplier_info, error = accounts.get_supplier_by_id({'supplier_id': invoice['supplier_id']})
+
+    if total_documents not in [0, []]:
+        documents_list = verifier.get_documents(args)
+        for document in documents_list:
+            year = document['register_date'].strftime('%Y')
+            month = document['register_date'].strftime('%m')
+            year_and_month = year + '/' + month
+            thumb = get_file_content('full', document['full_jpg_filename'], 'image/jpeg',
+                                     compress=True, year_and_month=year_and_month)
+            document['thumb'] = str(base64.b64encode(thumb.get_data()).decode('utf-8'))
+            if document['supplier_id']:
+                supplier_info, error = accounts.get_supplier_by_id({'supplier_id': document['supplier_id']})
                 if not error:
-                    invoice['supplier_name'] = supplier_info['name']
+                    document['supplier_name'] = supplier_info['name']
+                    if supplier_info['firstname'] and supplier_info['lastname'] and supplier_info['name']:
+                        document['supplier_name'] = supplier_info['firstname'] + ' ' + supplier_info['lastname'] + ' (' + supplier_info['name'] + ')'
+
+                    if not supplier_info['name']:
+                        if supplier_info['firstname'] and supplier_info['lastname']:
+                            document['supplier_name'] = supplier_info['firstname'] + ' ' + supplier_info['lastname']
+                        elif 'lastname' in supplier_info:
+                            document['supplier_name'] = supplier_info['lastname']
+
+            attachments_counts = attachments.get_attachments_by_document_id(document['id'])
+            document['attachments_count'] = len(attachments_counts) if attachments_counts else 0
         response = {
-            "total": total_invoices[0]['total'],
-            "invoices": invoices_list
+            "total": total_documents[0]['total'],
+            "documents": documents_list
         }
         return response, 200
     return '', 200
 
 
-def update_position_by_invoice_id(invoice_id, args):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    invoice_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
+def update_position_by_document_id(document_id, args):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
     if error is None:
         column = position = ''
         for _position in args:
             column = _position
             position = args[_position]
 
-        invoice_positions = invoice_info['positions']
-        invoice_positions.update({
+        document_positions = document_info['positions']
+        document_positions.update({
             column: position
         })
-        res, error = verifier.update_invoice({
-            'set': {"positions": json.dumps(invoice_positions)},
-            'invoice_id': invoice_id
+        _, error = verifier.update_document({
+            'set': {"positions": json.dumps(document_positions)},
+            'document_id': document_id
         })
         if error is None:
             return '', 200
         else:
             response = {
-                "errors": gettext('UPDATE_INVOICE_POSITIONS_ERROR'),
-                "message": error
+                "errors": gettext('UPDATE_DOCUMENT_POSITIONS_ERROR'),
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
 
 
-def update_page_by_invoice_id(invoice_id, args):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    invoice_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
+def update_page_by_document_id(document_id, args):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
     if error is None:
         column = page = ''
         for _page in args:
             column = _page
             page = args[_page]
 
-        invoice_pages = invoice_info['pages']
-        invoice_pages.update({
+        document_pages = document_info['pages']
+        document_pages.update({
             column: page
         })
-        res, error = verifier.update_invoice({'set': {"pages": json.dumps(invoice_pages)}, 'invoice_id': invoice_id})
+        _, error = verifier.update_document({'set': {"pages": json.dumps(document_pages)}, 'document_id': document_id})
         if error is None:
             return '', 200
         else:
             response = {
-                "errors": gettext('UPDATE_INVOICE_PAGES_ERROR'),
-                "message": error
+                "errors": gettext('UPDATE_DOCUMENT_PAGES_ERROR'),
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
 
 
-def update_invoice_data_by_invoice_id(invoice_id, args):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    invoice_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
+def update_document_data_by_document_id(document_id, args):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
     if error is None:
         _set = {}
-        invoice_data = invoice_info['datas']
+        document_data = document_info['datas']
         for _data in args:
             column = _data
             value = args[_data]
-            invoice_data.update({
+            document_data.update({
                 column: value
             })
-        res, error = verifier.update_invoice({'set': {"datas": json.dumps(invoice_data)}, 'invoice_id': invoice_id})
+
+        _, error = verifier.update_document({'set': {"datas": json.dumps(document_data)}, 'document_id': document_id})
         if error is None:
             return '', 200
         else:
             response = {
-                "errors": gettext('UPDATE_INVOICE_DATA_ERROR'),
-                "message": error
+                "errors": gettext('UPDATE_DOCUMENT_DATA_ERROR'),
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
 
 
-def delete_invoice_data_by_invoice_id(invoice_id, field_id):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    invoice_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
+def delete_document_data_by_document_id(document_id, field_id):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
     if error is None:
         _set = {}
-        invoice_data = invoice_info['datas']
-        if field_id in invoice_data:
-            del (invoice_data[field_id])
-        res, error = verifier.update_invoice({'set': {"datas": json.dumps(invoice_data)}, 'invoice_id': invoice_id})
+        document_data = document_info['datas']
+        if field_id in document_data:
+            del document_data[field_id]
+        _, error = verifier.update_document({'set': {"datas": json.dumps(document_data)}, 'document_id': document_id})
         if error is None:
             return '', 200
         else:
             response = {
-                "errors": gettext('UPDATE_INVOICE_DATA_ERROR'),
-                "message": error
+                "errors": gettext('UPDATE_DOCUMENT_DATA_ERROR'),
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
 
 
-def delete_invoice_position_by_invoice_id(invoice_id, field_id):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    invoice_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
+def delete_documents_by_document_id(document_id):
+    if 'docservers' in current_context:
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        docservers = _vars[9]
+
+    document, error = verifier.get_document_by_id({'document_id': document_id})
+    if not error:
+        delete_documents(docservers, document['path'], document['filename'], document['full_jpg_filename'])
+
+    _, error = verifier.update_document({
+        'set': {"status": 'DEL'},
+        'document_id': document_id
+    })
+    return '', 200
+
+
+def delete_document_position_by_document_id(document_id, field_id):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
     if error is None:
         _set = {}
-        invoice_positions = invoice_info['positions']
-        if field_id in invoice_positions:
-            del (invoice_positions[field_id])
-        res, error = verifier.update_invoice(
-            {'set': {"positions": json.dumps(invoice_positions)}, 'invoice_id': invoice_id})
+        document_positions = document_info['positions']
+        if field_id in document_positions:
+            del document_positions[field_id]
+        _, error = verifier.update_document(
+            {'set': {"positions": json.dumps(document_positions)}, 'document_id': document_id})
         if error is None:
             return '', 200
         else:
             response = {
-                "errors": gettext('UPDATE_INVOICE_POSITIONS_ERROR'),
-                "message": error
+                "errors": gettext('UPDATE_DOCUMENT_POSITIONS_ERROR'),
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
 
 
-def delete_invoice_page_by_invoice_id(invoice_id, field_id):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    invoice_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
+def delete_document_page_by_document_id(document_id, field_id):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
     if error is None:
         _set = {}
-        invoice_pages = invoice_info['pages']
-        if field_id in invoice_pages:
-            del (invoice_pages[field_id])
-        res, error = verifier.update_invoice({'set': {"pages": json.dumps(invoice_pages)}, 'invoice_id': invoice_id})
+        document_pages = document_info['pages']
+        if field_id in document_pages:
+            del document_pages[field_id]
+        _, error = verifier.update_document({'set': {"pages": json.dumps(document_pages)}, 'document_id': document_id})
         if error is None:
             return '', 200
         else:
             response = {
-                "errors": gettext('UPDATE_INVOICE_PAGES_ERROR'),
-                "message": error
+                "errors": gettext('UPDATE_DOCUMENT_PAGES_ERROR'),
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
 
 
-def delete_invoice(invoice_id):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-
-    user_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
+def delete_document(document_id):
+    _, error = verifier.get_document_by_id({'document_id': document_id})
     if error is None:
-        res, error = verifier.update_invoice({'set': {'status': 'DEL'}, 'invoice_id': invoice_id})
+        _, error = verifier.update_document({'set': {'status': 'DEL'}, 'document_id': document_id})
         if error is None:
+            history.add_history({
+                'module': 'verifier',
+                'ip': request.remote_addr,
+                'submodule': 'delete_document',
+                'user_info': request.environ['user_info'],
+                'desc': gettext('DELETE_DOCUMENT_SUCCESS', document_id=document_id)
+            })
             return '', 200
         else:
             response = {
-                "errors": gettext('DELETE_INVOICE_ERROR'),
-                "message": error
+                "errors": gettext('DELETE_DOCUMENT_ERROR'),
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
     else:
         response = {
-            "errors": gettext('DELETE_INVOICE_ERROR'),
-            "message": error
+            "errors": gettext('DELETE_DOCUMENT_ERROR'),
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
-def update_invoice(invoice_id, data):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    invoice_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
-
+def update_document(document_id, data):
+    _, error = verifier.get_document_by_id({'document_id': document_id})
     if error is None:
-        res, error = verifier.update_invoice({'set': data, 'invoice_id': invoice_id})
+        _, error = verifier.update_document({'set': data, 'document_id': document_id})
 
         if error is None:
             return '', 200
         else:
             response = {
-                "errors": gettext('UPDATE_INVOICE_ERROR'),
-                "message": error
+                "errors": gettext('UPDATE_DOCUMENT_ERROR'),
+                "message": gettext(error)
             }
-            return response, 401
+            return response, 400
     else:
         response = {
-            "errors": gettext('UPDATE_INVOICE_ERROR'),
-            "message": error
+            "errors": gettext('UPDATE_DOCUMENT_ERROR'),
+            "message": gettext(error)
         }
-        return response, 401
+        return response, 400
 
 
 def remove_lock_by_user_id(user_id):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-
-    res, error = verifier.update_invoices({
-        'set': {"locked": False},
+    _, error = verifier.update_documents({
+        'set': {
+            'locked': False,
+            'locked_by': None
+        },
         'where': ['locked_by = %s'],
         'data': [user_id]
     })
@@ -336,284 +501,348 @@ def remove_lock_by_user_id(user_id):
     else:
         response = {
             "errors": gettext('REMOVE_LOCK_BY_USER_ID_ERROR'),
-            "message": error
-        }
-        return response, 401
-
-
-def export_maarch(invoice_id, data):
-    _vars = create_classes_from_current_config()
-    host = login = password = ''
-    auth_data = data['options']['auth']
-    for _data in auth_data:
-        if _data['id'] == 'host':
-            host = _data['value']
-        if _data['id'] == 'login':
-            login = _data['value']
-        if _data['id'] == 'password':
-            password = _data['value']
-
-    if host and login and password:
-        ws = _MaarchWebServices(
-            host,
-            login,
-            password,
-            _vars[5],
-            _vars[1]
-        )
-        if ws.status[0]:
-            invoice_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
-            if not error:
-                args = {}
-                supplier = accounts.get_supplier_by_id({'supplier_id': invoice_info['supplier_id']})
-                if supplier and supplier[0]['address_id']:
-                    address = accounts.get_address_by_id({'address_id': supplier[0]['address_id']})
-                    if address:
-                        supplier[0].update(address[0])
-
-                contact = {
-                    'company': supplier[0]['name'],
-                    'addressTown': supplier[0]['city'],
-                    'societyShort': supplier[0]['name'],
-                    'addressStreet': supplier[0]['address1'],
-                    'addressPostcode': supplier[0]['postal_code'],
-                    'customFields': {},
-                    'email': 'A_renseigner_' + supplier[0]['name'].replace(' ', '_') + '@' + supplier[0][
-                        'vat_number'] + '.fr'
-                }
-                res = ws.create_contact(contact)
-                if res is not False:
-                    args['contact'] = {'id': res['id'], 'type': 'contact'}
-
-                ws_data = data['options']['parameters']
-                for _data in ws_data:
-                    value = _data['value']
-                    if 'webservice' in _data:
-                        # Pour le webservices Maarch, ce sont les identifiants qui sont utilisés
-                        # et non les valeurs bruts (e.g COU plutôt que Service courrier)
-                        value = _data['value']['id']
-
-                    args.update({
-                        _data['id']: value
-                    })
-
-                    if _data['id'] == 'priority':
-                        priority = ws.retrieve_priority(value)
-                        if priority:
-                            delays = priority['priority']['delays']
-                            process_limit_date = datetime.date.today() + datetime.timedelta(days=delays)
-                            args.update({
-                                'processLimitDate': str(process_limit_date)
-                            })
-
-                    if _data['id'] == 'customFields':
-                        args.update({
-                            'customFields': {}
-                        })
-                        if _data['value']:
-                            customs = json.loads(_data['value'])
-                            for custom_id in customs:
-                                if custom_id in customs and customs[custom_id] in invoice_info['datas']:
-                                    args['customFields'].update({
-                                        custom_id: invoice_info['datas'][customs[custom_id]]
-                                    })
-                    elif _data['id'] == 'subject':
-                        subject = construct_with_var(_data['value'], invoice_info)
-                        args.update({
-                            'subject': ''.join(subject)
-                        })
-
-                file = invoice_info['path'] + '/' + invoice_info['filename']
-                if os.path.isfile(file):
-                    args.update({
-                        'fileContent': open(file, 'rb').read(),
-                        'documentDate': str(pd.to_datetime(invoice_info['datas']['invoice_date']).date())
-                    })
-                    res, message = ws.insert_with_args(args)
-                    if res:
-                        return '', 200
-                    else:
-                        response = {
-                            "errors": gettext('EXPORT_MAARCH_ERROR'),
-                            "message": message['errors']
-                        }
-                        return response, 400
-                else:
-                    response = {
-                        "errors": gettext('EXPORT_MAARCH_ERROR'),
-                        "message": gettext('PDF_FILE_NOT_FOUND')
-                    }
-                    return response, 400
-            else:
-                response = {
-                    "errors": gettext('EXPORT_MAARCH_ERROR'),
-                    "message": error
-                }
-                return response, 400
-        else:
-            response = {
-                "errors": gettext('MAARCH_WS_INFO_WRONG'),
-                "message": ws.status[1]
-            }
-            return response, 400
-    else:
-        response = {
-            "errors": gettext('MAARCH_WS_INFO_EMPTY'),
-            "message": ''
+            "message": gettext(error)
         }
         return response, 400
 
 
-def construct_with_var(data, invoice_info, separator=False):
-    _vars = create_classes_from_current_config()
-    _locale = _vars[2]
-    _data = []
-    for column in data.split('#'):
-        if column in invoice_info['datas']:
-            if separator:
-                _data.append(invoice_info['datas'][column].replace(' ', separator))
-            else:
-                _data.append(invoice_info['datas'][column])
-        elif column in invoice_info:
-            if separator:
-                _data.append(invoice_info[column].replace(' ', separator))
-            else:
-                _data.append(invoice_info[column])
-        elif column == 'invoice_date_year':
-            _data.append(datetime.datetime.strptime(invoice_info['datas']['invoice_date'], _locale.formatDate).year)
-        elif column == 'invoice_date_month':
-            _data.append(datetime.datetime.strptime(invoice_info['datas']['invoice_date'], _locale.formatDate).month)
-        elif column == 'invoice_date_day':
-            _data.append(datetime.datetime.strptime(invoice_info['datas']['invoice_date'], _locale.formatDate).day)
-        elif column == 'register_date_year':
-            _data.append(datetime.datetime.strptime(invoice_info['register_date'], _locale.formatDate).year)
-        elif column == 'register_date_month':
-            _data.append(datetime.datetime.strptime(invoice_info['register_date'], _locale.formatDate).month)
-        elif column == 'register_date_day':
-            _data.append(datetime.datetime.strptime(invoice_info['register_date'], _locale.formatDate).day)
-        else:
-            if separator:
-                _data.append(column.replace(' ', separator))
-            else:
-                _data.append(column)
-    return _data
+def export_mem(document_id, data):
+    if 'regex' in current_context and 'database' in current_context and 'log' in current_context:
+        log = current_context.log
+        regex = current_context.regex
+        database = current_context.database
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        log = _vars[5]
+        regex = _vars[2]
+        database = _vars[0]
+
+    log.database = database
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
+    if not error:
+        return verifier_exports.export_mem(data['data'], document_info, log, regex, database)
 
 
-def export_xml(invoice_id, data):
-    folder_out = separator = filename = extension = ''
-    parameters = data['options']['parameters']
-    for setting in parameters:
-        if setting['id'] == 'folder_out':
-            folder_out = setting['value']
-        elif setting['id'] == 'separator':
-            separator = setting['value']
-        elif setting['id'] == 'filename':
-            filename = setting['value']
-        elif setting['id'] == 'extension':
-            extension = setting['value']
+def export_coog(document_id, data):
+    if 'database' in current_context and 'log' in current_context:
+        log = current_context.log
+        database = current_context.database
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        log = _vars[5]
+        database = _vars[0]
 
-    invoice_info, error = verifier.get_invoice_by_id({'invoice_id': invoice_id})
+    log.database = database
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
+    if not error:
+        return verifier_exports.export_coog(data['data'], document_info, log, database)
+    return None
+
+
+def export_opencrm(document_id, data):
+    if 'database' in current_context and 'log' in current_context:
+        log = current_context.log
+        database = current_context.database
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        log = _vars[5]
+        database = _vars[0]
+
+    log.database = database
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
+    if not error:
+        return verifier_exports.export_opencrm(data['data'], document_info, log, database)
+    return None
+
+
+def export_cmis(document_id, data):
+    if 'database' in current_context and 'log' in current_context:
+        log = current_context.log
+        database = current_context.database
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        log = _vars[5]
+        database = _vars[0]
+        docservers = _vars[9]
+
+    log.database = database
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
+    if not error:
+        return verifier_exports.export_cmis(data['data'], document_info, log, database, docservers, data['compress_type'], data['ocrise'])
+    return None
+
+
+def export_xml(document_id, data):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
 
     if not error:
-        _technical_data = []
-        # Create the XML filename
-        _data = construct_with_var(filename, invoice_info, separator)
-        filename = separator.join(str(x) for x in _data) + '.' + extension
-        # END create the XML filename
-
-        # Fill XML with invoice informations
-        if os.path.isdir(folder_out):
-            xml_file = open(folder_out + '/' + filename, 'w')
-            root = Et.Element('ROOT')
-            xml_technical = Et.SubElement(root, 'TECHNICAL')
-            xml_datas = Et.SubElement(root, 'DATAS')
-
-            for technical in invoice_info:
-                if technical in ['path', 'filename', 'register_date', 'nb_pages', 'purchase_or_sale']:
-                    new_field = Et.SubElement(xml_technical, technical)
-                    new_field.text = str(invoice_info[technical])
-
-            for data in invoice_info['datas']:
-                new_field = Et.SubElement(xml_datas, data)
-                new_field.text = str(invoice_info['datas'][data])
-
-            xml_root = minidom.parseString(Et.tostring(root, encoding="unicode")).toprettyxml()
-            xml_file.write(xml_root)
-            xml_file.close()
-            # END Fill XML with invoice informations
-            return '', 200
+        if 'database' in current_context and 'log' in current_context:
+            log = current_context.log
+            database = current_context.database
         else:
-            response = {
-                "errors": gettext('XML_DESTINATION_FOLDER_DOESNT_EXISTS'),
-                "message": folder_out
-            }
-            return response, 401
+            custom_id = retrieve_custom_from_url(request)
+            _vars = create_classes_from_custom_id(custom_id)
+            log = _vars[5]
+            database = _vars[0]
+
+        log.database = database
+        return verifier_exports.export_xml(data['data'], log, document_info, database)
+
+
+def export_pdf(document_id, data):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
+    if not error:
+        if 'log' in current_context and 'database' in current_context:
+            log = current_context.log
+            database = current_context.database
+        else:
+            custom_id = retrieve_custom_from_url(request)
+            _vars = create_classes_from_custom_id(custom_id)
+            log = _vars[5]
+            database = _vars[0]
+
+        log.database = database
+        return verifier_exports.export_pdf(data['data'], log, document_info, data['compress_type'], data['ocrise'])
+
+
+def export_facturx(document_id, data):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
+    if not error:
+        if 'log' in current_context and 'regex' in current_context and 'database' in current_context:
+            log = current_context.log
+            regex = current_context.regex
+            database = current_context.database
+        else:
+            custom_id = retrieve_custom_from_url(request)
+            _vars = create_classes_from_custom_id(custom_id)
+            log = _vars[5]
+            regex = _vars[2]
+            database = _vars[0]
+
+        log.database = database
+        return verifier_exports.export_facturx(data['data'], log, regex, document_info)
+
+
+def launch_output_script(document_id, workflow_settings, outputs):
+    custom_id = retrieve_custom_from_url(request)
+    if 'config' in current_context and 'docservers' in current_context and 'log' in current_context \
+            and 'database' in current_context:
+        log = current_context.log
+        config = current_context.config
+        database = current_context.database
+        docservers = current_context.docservers
     else:
-        response = {
-            "errors": gettext('EXPORT_XML_ERROR'),
-            "message": error
-        }
-    return response, 401
+        _vars = create_classes_from_custom_id(custom_id)
+        log = _vars[5]
+        config = _vars[1]
+        database = _vars[0]
+        docservers = _vars[9]
+
+    if 'script' in workflow_settings['output'] and workflow_settings['output']['script']:
+        script = workflow_settings['output']['script']
+        check_res, message = check_code(script, docservers['VERIFIER_SHARE'],
+                                        workflow_settings['input']['input_folder'])
+
+        if not check_res:
+            log.error('[OUTPUT_SCRIPT ERROR] ' + gettext('SCRIPT_CONTAINS_NOT_ALLOWED_CODE') +
+                      '&nbsp;<strong>(' + message.strip() + ')</strong>')
+            return False
+
+        rand = str(uuid.uuid4())
+        tmp_file = docservers['TMP_PATH'] + '/output_scripting_' + rand + '.py'
+
+        try:
+            with open(tmp_file, 'w', encoding='utf-8') as python_script:
+                python_script.write(script)
+
+            if os.path.isfile(tmp_file):
+                script_name = tmp_file.replace(config['GLOBAL']['applicationpath'], '')
+                script_name = script_name.replace('/', '.').replace('.py', '')
+                script_name = script_name.replace('..', '.')
+                try:
+                    tmp_script_name = script_name.replace('custom.', '')
+                    scripting = importlib.import_module(tmp_script_name, 'custom')
+                    script_name = tmp_script_name
+                except ModuleNotFoundError:
+                    scripting = importlib.import_module(script_name, 'custom')
+                res = False
+
+                if document_id:
+                    document_info = database.select({
+                        'select': ['datas', 'filename', 'path'],
+                        'table': ['documents'],
+                        'where': ['id = %s'],
+                        'data': [document_id]
+                    })
+                    if document_info:
+                        datas = document_info[0]
+                        file = datas['path'] + '/' + datas['filename']
+                        data = {
+                            'log': log,
+                            'file': file,
+                            'outputs': outputs,
+                            'custom_id': custom_id,
+                            'datas': datas['datas'],
+                            'document_id': document_id,
+                            'opencapture_path': config['GLOBAL']['applicationpath']
+                        }
+                        res = scripting.main(data)
+
+                os.remove(tmp_file)
+                if not res:
+                    return False
+        except (Exception,) as _e:
+            os.remove(tmp_file)
+            log.error('Error during output scripting : ' + str(traceback.format_exc()))
 
 
-def ocr_on_the_fly(file_name, selection, thumb_size, positions_masks):
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1].cfg
-    _files = _vars[3]
-    _Ocr = _vars[4]
+def ocr_on_the_fly(file_name, selection, thumb_size, lang, remove_spaces=False):
+    if 'files' in current_context and 'ocr' in current_context and 'docservers' in current_context:
+        files = current_context.files
+        ocr = current_context.ocr
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        ocr = _vars[4]
+        files = _vars[3]
+        docservers = _vars[9]
 
-    path = _cfg['GLOBAL']['fullpath'] + '/' + file_name
+    path = docservers['VERIFIER_IMAGE_FULL'] + '/' + file_name
+    if not os.path.isfile(path):
+        return False
 
-    if positions_masks:
-        path = _cfg['GLOBAL']['positionsmaskspath'] + '/' + file_name
-
-    text = _files.ocr_on_fly(path, selection, _Ocr, thumb_size)
+    text = files.ocr_on_fly(path, selection, ocr, thumb_size, lang=lang, remove_spaces=remove_spaces)
     if text:
         return text
     else:
-        _files.improve_image_detection(path)
-        text = _files.ocr_on_fly(path, selection, _Ocr, thumb_size)
+        files.improve_image_detection(path)
+        text = files.ocr_on_fly(path, selection, ocr, thumb_size, lang=lang, remove_spaces=remove_spaces)
         return text
 
 
-def get_file_content(path, filename, mime_type, compress=False):
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1].cfg
+def get_thumb_by_document_id(document_id):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
+    if not error:
+        register_date = pd.to_datetime(document_info['register_date'])
+        year = register_date.strftime('%Y')
+        month = register_date.strftime('%m')
+        year_and_month = year + '/' + month
+        return get_file_content('full', document_info['full_jpg_filename'], 'image/jpeg', year_and_month=year_and_month)
+    else:
+        return '', 404
+
+
+def get_original_doc_by_document_id(document_id):
+    document_info, error = verifier.get_document_by_id({'document_id': document_id})
+    if not error:
+        path = document_info['path'] + '/' + document_info['filename']
+        mime = magic.Magic(mime=True)
+        mime_type = mime.from_file(path)
+        with open(path, 'rb') as file:
+            content = file.read()
+
+        if not content:
+            return None, ''
+        return content, mime_type
+    else:
+        return None, ''
+
+
+def get_file_content(file_type, filename, mime_type, compress=False, year_and_month=False, document_id=False):
+    if 'docservers' in current_context and 'files' in current_context:
+        files = current_context.files
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        files = _vars[3]
+        docservers = _vars[9]
+
     content = False
+    path = ''
+
+    if file_type == 'full':
+        path = docservers['VERIFIER_IMAGE_FULL']
+        if year_and_month:
+            path = path + '/' + str(year_and_month) + '/'
+    elif file_type == 'positions_masks':
+        path = docservers['VERIFIER_POSITIONS_MASKS']
+    elif file_type == 'referential_supplier':
+        path = docservers['REFERENTIALS_PATH']
 
     if path and filename:
         full_path = path + '/' + filename
         if os.path.isfile(full_path):
             if compress and mime_type == 'image/jpeg':
-                thumb_path = _cfg['GLOBAL']['thumbpath'] + '/' + filename
-                if not os.path.isfile(thumb_path):
-                    image = Image.open(full_path)
-                    image.thumbnail((1920, 1080))
-                    image.save(thumb_path, optimize=True, quality=50)
-                content = open(thumb_path, 'rb').read()
+                thumb_path = docservers['VERIFIER_THUMB']
+                if year_and_month:
+                    thumb_path = thumb_path + '/' + str(year_and_month) + '/'
+                if os.path.isfile(thumb_path + '/' + filename):
+                    content = return_rotated_content(file_type, thumb_path + '/' + filename)
             else:
-                content = open(full_path, 'rb').read()
+                content = return_rotated_content(file_type, full_path)
+        else:
+            if document_id:
+                document = verifier.get_document_by_id({
+                    'select': ['filename', 'full_jpg_filename'],
+                    'document_id': document_id
+                })
+                if document:
+                    document = document[0]
+                    cpt = int(filename.split('-')[len(filename.split('-')) - 1].replace('.jpg', ''))
+                    pdf_path = docservers['VERIFIER_ORIGINAL_DOC'] + '/' + str(year_and_month) + '/' + document['filename']
+                    filename = docservers['VERIFIER_IMAGE_FULL'] + '/' + str(year_and_month) + '/' + filename
+                    files.save_img_with_pdf2image(pdf_path, filename, cpt)
+                    if os.path.isfile(filename):
+                        content = return_rotated_content(file_type, filename)
 
     if not content:
         if mime_type == 'image/jpeg':
-            content = open(_cfg['GLOBAL']['projectpath'] + '/dist/assets/not_found/document_not_found.jpg', 'rb').read()
+            with open(docservers['PROJECT_PATH'] + '/dist/assets/not_found/document_not_found.jpg', 'rb') as file:
+                content = file.read()
         else:
-            content = open(_cfg['GLOBAL']['projectpath'] + '/dist/assets/not_found/document_not_found.pdf', 'rb').read()
-
+            with open(docservers['PROJECT_PATH'] + '/dist/assets/not_found/document_not_found.pdf', 'rb') as file:
+                content = file.read()
     return Response(content, mimetype=mime_type)
 
 
+def return_rotated_content(file_type, image):
+    if file_type == 'referential_supplier':
+        with open(image, 'rb') as file:
+            content = file.read()
+    else:
+        temp = Image.open(image)
+        temp = temp.convert('RGB')
+        with tempfile.NamedTemporaryFile() as tf:
+            temp.save(tf.name + '.jpg', format="JPEG")
+            rotate_img(tf.name + '.jpg')
+            with open(tf.name + '.jpg', 'rb') as file:
+                content = file.read()
+            os.remove(tf.name + '.jpg')
+    return content
+
+
 def get_token_insee():
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1]
+    if 'config' in current_context:
+        config = current_context.config
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        config = _vars[1]
+
     credentials = base64.b64encode(
-        (_cfg.cfg['API']['siret-consumer'] + ':' + _cfg.cfg['API']['siret-secret']).encode('UTF-8')).decode('UTF-8')
+        (config['API']['siret-consumer'] + ':' + config['API']['siret-secret']).encode('utf-8')).decode('utf-8')
 
     try:
-        res = requests.post(_cfg.cfg['API']['siret-url-token'],
-                            data={'grant_type': 'client_credentials'},
-                            headers={"Authorization": "Basic %s" % str(credentials)})
-    except requests.exceptions.SSLError:
+        res = requests.post(config['API']['siret-url-token'], data={'grant_type': 'client_credentials'},
+                            headers={"Authorization": f"Basic {credentials}"}, timeout=5)
+    except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
         return 'ERROR : ' + gettext('API_INSEE_ERROR_CONNEXION'), 201
 
     if 'Maintenance - INSEE' in res.text or res.status_code != 200:
@@ -622,44 +851,66 @@ def get_token_insee():
         return json.loads(res.text)['access_token'], 200
 
 
-def verify_siren(token, siren):
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1]
+def verify_siren(token, siren, full=False):
+    if 'config' in current_context:
+        config = current_context.config
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        config = _vars[1]
 
     try:
-        res = requests.get(_cfg.cfg['API']['siren-url'] + siren,
-                           headers={"Authorization": "Bearer %s" % token, "Accept": "application/json"})
-    except requests.exceptions.SSLError:
+        res = requests.get(config['API']['siren-url'] + siren,
+                           headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}, timeout=5)
+    except (requests.exceptions.SSLError, requests.exceptions.ConnectionError):
+        return 'ERROR : ' + gettext('API_INSEE_ERROR_CONNEXION'), 201
+
+    _return = json.loads(res.text)
+
+    if 'header' not in res.text:
+        return _return['fault']['message'], 201
+    else:
+        if full:
+            return _return, 200
+        return _return['header']['message'], _return['header']['statut']
+
+
+def verify_siret(token, siret, full=False):
+    if 'config' in current_context and 'log' in current_context:
+        log = current_context.log
+        config = current_context.config
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        log = _vars[5]
+        config = _vars[1]
+
+    try:
+        res = requests.get(config['API']['siret-url'] + siret,
+                           headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}, timeout=5)
+    except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as _e:
+        log.error(gettext('API_INSEE_ERROR_CONNEXION') + ' : ' + str(_e))
         return 'ERROR : ' + gettext('API_INSEE_ERROR_CONNEXION'), 201
 
     _return = json.loads(res.text)
     if 'header' not in res.text:
         return _return['fault']['message'], 201
     else:
-        return _return['header']['message'], 200
+        if full:
+            return _return, 200
+        return _return['header']['message'], _return['header']['statut']
 
 
-def verify_siret(token, siret):
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1]
-
-    try:
-        res = requests.get(_cfg.cfg['API']['siret-url'] + siret,
-                           headers={"Authorization": "Bearer %s" % token, "Accept": "application/json"})
-    except requests.exceptions.SSLError:
-        return 'ERROR : ' + gettext('API_INSEE_ERROR_CONNEXION'), 201
-
-    _return = json.loads(res.text)
-    if 'header' not in res.text:
-        return _return['fault']['message'], 201
+def verify_vat_number(vat_number, full=False):
+    if 'config' in current_context and 'log' in current_context:
+        log = current_context.log
+        config = current_context.config
     else:
-        return _return['header']['message'], 200
-
-
-def verify_vat_number(vat_number):
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1]
-    url = _cfg.cfg['API']['tva-url']
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        config = _vars[1]
+        log = _vars[5]
+    url = config['API']['tva-url']
     country_code = vat_number[:2]
     vat_number = vat_number[2:]
 
@@ -671,22 +922,146 @@ def verify_vat_number(vat_number):
         if res['valid'] is False:
             text = gettext('VAT_NOT_VALID')
             return text, 400
+        if full:
+            return res, 200
         return text, 200
-    except (exceptions.Fault, requests.exceptions.SSLError):
-        text = gettext('VAT_API_ERROR')
-        return text, 201
+    except (exceptions.Fault, requests.exceptions.SSLError, requests.exceptions.ConnectionError,
+            zeep.exceptions.XMLSyntaxError) as _e:
+        log.error(gettext('VAT_API_ERROR') + ' : ' + str(_e))
+        return gettext('VAT_API_ERROR'), 201
 
 
-def get_totals(status):
+def get_totals(status, user_id, form_id):
     totals = {}
-    totals['today'], error = verifier.get_totals({'time': 'today', 'status': status})
-    totals['yesterday'], error = verifier.get_totals({'time': 'yesterday', 'status': status})
-    totals['older'], error = verifier.get_totals({'time': 'older', 'status': status})
+    allowed_customers, _ = user.get_customers_by_user_id(user_id)
+    allowed_customers.append(0)  # Update allowed customers to add Unspecified customers
+
+    totals['today'], error = verifier.get_totals({
+        'time': 'today', 'status': status, 'form_id': form_id, 'user_id': user_id, 'allowedCustomers': allowed_customers
+    })
+    totals['yesterday'], error = verifier.get_totals({
+        'time': 'yesterday', 'status': status, 'form_id': form_id, 'user_id': user_id, 'allowedCustomers': allowed_customers
+    })
+    totals['older'], error = verifier.get_totals({
+        'time': 'older', 'status': status, 'form_id': form_id, 'user_id': user_id, 'allowedCustomers': allowed_customers
+    })
+
     if error is None:
         return totals, 200
     else:
         response = {
             "errors": gettext('GET_TOTALS_ERROR'),
-            "message": error
+            "message": gettext(error)
         }
         return response, 401
+
+
+def update_status(args):
+    for _id in args['ids']:
+        document = verifier.get_document_by_id({'document_id': _id})
+        if len(document[0]) < 1:
+            response = {
+                "errors": gettext('DOCUMENT_NOT_FOUND'),
+                "message": gettext('DOCUMENT_ID_NOT_FOUND', id=_id)
+            }
+            return response, 400
+
+    res = verifier.update_status(args)
+    if res:
+        return '', 200
+    else:
+        response = {
+            "errors": gettext('UPDATE_STATUS_ERROR'),
+            "message": gettext(res)
+        }
+        return response, 400
+
+
+def get_unseen(user_id):
+    user_customers = user.get_customers_by_user_id(user_id)
+    user_customers[0].append(0)
+
+    user_forms = user.get_forms_by_user_id(user_id)
+    if user_forms[1] == 200:
+        user_forms = user_forms[0]
+
+    total_unseen = verifier.get_total_documents({
+        'select'    : ["status.label_long as status", "count(documents.id) as unseen"],
+        'table'     : ["documents", "status"],
+        'left_join' : ["status.id = documents.status"],
+        'where'     : ["status IN ('NEW', 'ERR', 'WAIT_THIRD_PARTY')", "customer_id = ANY(%s)",
+                       "datas -> 'api_only' is NULL", "status.module = %s", "documents.form_id = ANY(%s)"],
+        'data'      : [user_customers[0], 'verifier', user_forms],
+        'group_by'  : ["status.label_long"]
+    })
+    return total_unseen, 200
+
+
+def get_customers_count(user_id, status, time):
+    user_customers = user.get_customers_by_user_id(user_id)
+    user_customers[0].append(0)
+    where_time = []
+    if time in ['today', 'yesterday']:
+        where_time.append(
+            "to_char(register_date, 'YYYY-MM-DD') = to_char(TIMESTAMP '" + time + "', 'YYYY-MM-DD')")
+    else:
+        where_time.append("to_char(register_date, 'YYYY-MM-DD') < to_char(TIMESTAMP 'yesterday', 'YYYY-MM-DD')")
+
+    customers_count = verifier.get_total_documents({
+        'select': ['customer_id', 'count(documents.id) as total'],
+        'where': ["status = %s", "customer_id = ANY(%s)", where_time[0], "datas -> 'api_only' is NULL"],
+        'data': [status, user_customers[0]],
+        'group_by': ['customer_id']
+    })
+    for customer in customers_count:
+        customer_info, error = accounts.get_customer_by_id({'customer_id': customer['customer_id']})
+        _forms = verifier.get_total_documents({
+            'select': ['form_id', 'count(documents.id) as total'],
+            'where': ["status = %s", "customer_id = ANY(%s)", where_time[0]],
+            'data': [status, user_customers[0]],
+            'group_by': ['form_id']
+        })
+        customer_suppliers = {
+            gettext('NO_FORM'): verifier.get_total_documents({
+                'select': ['supplier_id', 'count(documents.id) as total'],
+                'where': ["status = %s", "customer_id = %s", "form_id is NULL", where_time[0]],
+                'data': [status, customer['customer_id']],
+                'group_by': ['supplier_id']
+            })
+        }
+        for form in _forms:
+            if form['form_id'] is not None:
+                form_info, error = forms.get_form_by_id({'form_id': form['form_id']})
+                if error is not None:
+                    form_label = gettext('FORM_NOT_FOUND')
+                else:
+                    form_label = form_info['label']
+
+                where = ["status = %s", "customer_id = %s", "form_id = %s", where_time[0]]
+                data = [status, customer['customer_id'], form['form_id']]
+
+                customer_suppliers[form_label] = verifier.get_total_documents({
+                    'select': ['supplier_id', 'count(documents.id) as total'],
+                    'where': where,
+                    'data': data,
+                    'group_by': ['supplier_id']
+                })
+
+                for supplier in customer_suppliers[form_label]:
+                    supplier_info, error_supplier = accounts.get_supplier_by_id({'supplier_id': supplier['supplier_id']})
+                    if error_supplier is None:
+                        if supplier_info['firstname'] and supplier_info['lastname'] and supplier_info['name']:
+                            supplier['name'] = supplier_info['firstname'] + ' ' + supplier_info['lastname'] + ' (' + supplier_info['name'] + ')'
+                        elif supplier_info['firstname'] and supplier_info['lastname']:
+                            supplier['name'] = supplier_info['firstname'] + ' ' + supplier_info['lastname']
+                        elif supplier_info['lastname'] and supplier_info['name']:
+                            supplier['name'] = supplier_info['lastname'] + ' (' + supplier_info['name'] + ')'
+                        elif supplier_info['lastname']:
+                            supplier['name'] = supplier_info['lastname']
+                        else:
+                            supplier['name'] = supplier_info['name']
+                    supplier['form_id'] = form['form_id']
+        customer['suppliers'] = customer_suppliers
+        if error is None and customer['customer_id'] != 0:
+            customer['name'] = customer_info['name']
+    return customers_count, 200

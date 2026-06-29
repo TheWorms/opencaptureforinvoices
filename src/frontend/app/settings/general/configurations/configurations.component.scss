@@ -1,23 +1,95 @@
+@reference "tailwindcss";
+@config "../../../../../../tailwind.config.js";
+
 .mat-column-description {
     flex: 0 0 35%;
+}
+
+.mat-column-label {
+    flex: 0 0 15%;
+}
+
+.mat-column-content {
+    flex: 0 0 25%;
+}
+
+.mat-column-id, mat-column-type {
+    flex: 0 0 10%;
 }
 
 .mat-column-actions {
     flex: 0 0 5%;
 }
 
-.mat-column-value {
-    & ::ng-deep .mat-form-field-wrapper {
-        @apply pt-2;
-        @apply pb-2;
+.mat-mdc-tab-header .mat-mdc-tab-label-container .mat-mdc-tab-list .mat-mdc-tab-labels .mdc-tab {
+    @apply w-1/4!;
+}
 
-        & .mat-form-field-infix {
-            max-height: 1vh !important;
+.hint {
+    @apply my-3;
+    @apply flex;
+    @apply mx-auto;
+    @apply border-l-8;
+    @apply rounded-sm;
+    @apply text-gray-900;
+    @apply justify-center;
+    @apply bg-green-400/40;
+    @apply border-l-gray-900/50;
 
-            & .mat-select-value {
-                @apply relative;
-                @apply -top-0.5;
-            }
-        }
+    & i {
+        @apply flex;
+        @apply items-center;
+        @apply text-green-400;
+    }
+
+    & .message {
+        @apply m-2;
+    }
+}
+
+.hint .mdc-text-field--outlined .mdc-notched-outline {
+    @apply h-8;
+    @apply top-3;
+}
+
+.tox-tinymce {
+    @apply h-60!;
+}
+
+.tox {
+    @apply border-gray-200!;
+    & .tox-tbtn--enabled, .tox .tox-tbtn--enabled:hover, .tox-collection--list .tox-collection__item--active {
+        @apply bg-green-400!;
+        @apply text-gray-900!;
+    }
+
+    & .tox-tbtn:hover {
+        @apply text-gray-900!;
+        @apply bg-green-400/60!;
+    }
+
+    & .tox-button {
+        @apply bg-green-400!;
+        @apply text-gray-900!;
+        @apply border-green-400!;
+    }
+
+    & .tox-button--secondary {
+        @apply bg-white!;
+        @apply text-gray-900!;
+    }
+
+    & .tox-textfield:focus {
+        @apply border-green-400!;
+        box-shadow: 0 0 0 2px #97BF3D !important;
+    }
+
+    & .tox-listboxfield .tox-listbox--select:focus {
+        @apply border-green-400!;
+        box-shadow: 0 0 0 2px #97BF3D !important;
+    }
+
+    & .tox-edit-area::before {
+        @apply border-green-400!;
     }
 }

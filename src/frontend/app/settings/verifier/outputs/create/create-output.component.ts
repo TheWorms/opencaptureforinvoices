@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
-Open-Capture for Invoices is free software: you can redistribute it and/or modify
+Open-Capture is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
@@ -11,33 +11,33 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
 @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
 
-import {Component, OnInit} from '@angular/core';
-import {Router} from "@angular/router";
-import {HttpClient} from "@angular/common/http";
-import {UserService} from "../../../../../services/user.service";
-import {FormControl} from "@angular/forms";
-import {AuthService} from "../../../../../services/auth.service";
-import {TranslateService} from "@ngx-translate/core";
-import {NotificationService} from "../../../../../services/notifications/notifications.service";
-import {SettingsService} from "../../../../../services/settings.service";
-import {PrivilegesService} from "../../../../../services/privileges.service";
-import {API_URL} from "../../../../env";
-import {catchError, finalize, tap} from "rxjs/operators";
-import {of} from "rxjs";
-import {HistoryService} from "../../../../../services/history.service";
+import { Component, OnInit } from '@angular/core';
+import { Router } from "@angular/router";
+import { HttpClient } from "@angular/common/http";
+import { UserService } from "../../../../../services/user.service";
+import { FormControl } from "@angular/forms";
+import { AuthService } from "../../../../../services/auth.service";
+import { _, TranslateService } from "@ngx-translate/core";
+import { NotificationService } from "../../../../../services/notifications/notifications.service";
+import { SettingsService } from "../../../../../services/settings.service";
+import { PrivilegesService } from "../../../../../services/privileges.service";
+import { environment } from  "../../../../env";
+import { catchError, finalize, tap } from "rxjs/operators";
+import { of } from "rxjs";
 
 @Component({
-    selector: 'app-output-create',
+    selector: 'create-output',
     templateUrl: './create-output.component.html',
-    styleUrls: ['./create-output.component.scss']
+    standalone: false
 })
 export class CreateOutputComponent implements OnInit {
     loading             : boolean       = true;
     outputsTypes        : any[]         = [];
+    selectedOutputType  : any;
     outputForm          : any[]         = [
         {
             id: 'output_type_id',
@@ -52,7 +52,57 @@ export class CreateOutputComponent implements OnInit {
             label: this.translate.instant('HEADER.label'),
             type: 'text',
             control: new FormControl(),
-            required: true,
+            required: true
+        },
+        {
+            id: 'compress_type',
+            label: this.translate.instant('OUTPUT.compress_type'),
+            type: 'select',
+            control: new FormControl(),
+            values: [
+                {
+                    'id': '',
+                    'label': _('OUTPUT.no_compress')
+                },
+                {
+                    'id': 'screen',
+                    'label': _('OUTPUT.compress_screen')
+                },
+                {
+                    'id': 'ebook',
+                    'label': _('OUTPUT.compress_ebook')
+                },
+                {
+                    'id': 'prepress',
+                    'label': _('OUTPUT.compress_prepress')
+                },
+                {
+                    'id': 'printer',
+                    'label': _('OUTPUT.compress_printer')
+                },
+                {
+                    'id': 'default',
+                    'label': _('OUTPUT.compress_default')
+                }
+            ],
+            required: false
+        },
+        {
+            id: 'ocrise',
+            label: this.translate.instant('OUTPUT.enable_ocr'),
+            type: 'select',
+            control: new FormControl(),
+            values: [
+                {
+                    'id': true,
+                    'label': _('OUTPUT.ocr_enabled')
+                },
+                {
+                    'id': false,
+                    'label': _('OUTPUT.ocr_disabled')
+                }
+            ],
+            required: false
         }
     ];
 
@@ -63,15 +113,22 @@ export class CreateOutputComponent implements OnInit {
         private authService: AuthService,
         public translate: TranslateService,
         private notify: NotificationService,
-        private historyService: HistoryService,
         public serviceSettings: SettingsService,
-        public privilegesService: PrivilegesService,
+        public privilegesService: PrivilegesService
     ) {}
 
     ngOnInit(): void {
-        this.http.get(API_URL + '/ws/outputs/getOutputsTypes?module=verifier', {headers: this.authService.headers}).pipe(
+        this.serviceSettings.init();
+
+        this.outputForm.forEach((element: any) => {
+            if (element.id === 'compress_type') {
+                element.control.setValue('');
+            }
+        });
+
+        this.http.get(environment['url'] + '/ws/outputs/verifier/getOutputsTypes', {headers: this.authService.headers}).pipe(
             tap((data: any) => {
-                this.outputsTypes = data.outputs_types;
+                this.outputsTypes = data['outputs_types'];
             }),
             finalize(() => {this.loading = false;}),
             catchError((err: any) => {
@@ -86,7 +143,8 @@ export class CreateOutputComponent implements OnInit {
     isValidForm(form: any) {
         let state = true;
         form.forEach((element: any) => {
-            if ((element.control.status !== 'DISABLED' && element.control.status !== 'VALID') || element.control.value == null) {
+            if ((element.control.status !== 'DISABLED' && element.control.status !== 'VALID') ||
+                (element.required && element.control.value == null)) {
                 state = false;
             }
             element.control.markAsTouched();
@@ -96,18 +154,21 @@ export class CreateOutputComponent implements OnInit {
 
     createOutput() {
         if (this.isValidForm(this.outputForm)) {
-            const outputTypeId = this.getValueFromForm(this.outputForm, 'output_type_id');
+            const ocrise = this.getValueFromForm(this.outputForm, 'ocrise');
             const outputLabel = this.getValueFromForm(this.outputForm, 'output_label');
-            this.http.post(API_URL + '/ws/outputs/create',
+            const compressType = this.getValueFromForm(this.outputForm, 'compress_type');
+            const outputTypeId = this.getValueFromForm(this.outputForm, 'output_type_id');
+            this.http.post(environment['url'] + '/ws/outputs/verifier/create',
                 {'args': {
                     'output_type_id': outputTypeId,
-                    'output_label': outputLabel,
-                    'module': 'verifier',
+                    'output_label'  : outputLabel,
+                    'compress_type' : compressType,
+                    'ocrise'        : ocrise,
+                    'module'        : 'verifier'
                 }}, {headers: this.authService.headers},
             ).pipe(
                 tap((data: any) => {
                     this.notify.success(this.translate.instant('OUTPUT.created'));
-                    this.historyService.addHistory('verifier', 'create_output', this.translate.instant('HISTORY-DESC.create-output', {output: outputLabel}));
                     this.router.navigate(['/settings/verifier/outputs/update/' + data.id]).then();
                 }),
                 catchError((err: any) => {
@@ -141,4 +202,7 @@ export class CreateOutputComponent implements OnInit {
         return error;
     }
 
+    changeOutputType(event: any) {
+        this.selectedOutputType = event.value;
+    }
 }

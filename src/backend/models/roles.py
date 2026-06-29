@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,40 +11,50 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
+# @dev : Oussama BRICH <oussama.brich@edissyum.com>
 
 from flask_babel import gettext
-from src.backend.main import create_classes_from_current_config
+from flask import request, g as current_context
+from src.backend.functions import retrieve_custom_from_url
+from src.backend.main import create_classes_from_custom_id
 
 
 def get_roles(args):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    roles = _db.select({
+    if 'database' in current_context:
+        database = current_context.database
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        database = _vars[0]
+    roles = database.select({
         'select': ["*"] if "select" not in args else args["select"],
         'table': ["roles"],
-        'where': ["status NOT IN (%s)", "editable <> %s"],
-        'data': ["DEL", "false"],
+        'where': ["status NOT IN (%s)", "editable <> %s"] if "where" not in args else args["where"],
+        'data': ["DEL", "false"] if "data" not in args else args["data"],
         'order_by': ["id ASC"],
-        'limit': str(args['limit']) if 'limit' in args else [],
-        'offset': str(args['offset']) if 'offset' in args else [],
+        'limit': str(args['limit']) if 'limit' in args else 'ALL',
+        'offset': str(args['offset']) if 'offset' in args else 0
     })
 
     return roles
 
 
 def get_role_by_id(args):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
+    if 'database' in current_context:
+        database = current_context.database
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        database = _vars[0]
     error = None
-    role = _db.select({
+    role = database.select({
         'select': ['*'] if 'select' not in args else args['select'],
         'table': ['roles'],
-        'where': ['id = %s', "editable <> %s", "status NOT IN (%s)"],
-        'data': [args['role_id'], 'false', 'DEL']
+        'where': ['id = %s', "editable <> %s", "status NOT IN (%s)"] if "where" not in args else args["where"],
+        'data': [args['role_id'], 'false', 'DEL'] if 'data' not in args else args['data']
     })
 
     if not role:
@@ -55,11 +66,15 @@ def get_role_by_id(args):
 
 
 def update_role(args):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
+    if 'database' in current_context:
+        database = current_context.database
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        database = _vars[0]
     error = None
 
-    role = _db.update({
+    role = database.update({
         'table': ['roles'],
         'set': args['set'],
         'where': ['id = %s'],
@@ -73,13 +88,17 @@ def update_role(args):
 
 
 def create_role(args):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
+    if 'database' in current_context:
+        database = current_context.database
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        database = _vars[0]
     error = None
 
-    role = _db.insert({
+    role = database.insert({
         'table': 'roles',
-        'columns': args['columns'],
+        'columns': args['columns']
     })
 
     if not role:
@@ -89,11 +108,15 @@ def create_role(args):
 
 
 def update_role_privileges(args):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
+    if 'database' in current_context:
+        database = current_context.database
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        database = _vars[0]
     error = None
 
-    role = _db.update({
+    role = database.update({
         'table': ['roles_privileges'],
         'set': args['set'],
         'where': ['role_id = %s'],
@@ -107,14 +130,18 @@ def update_role_privileges(args):
 
 
 def create_role_privileges(args):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
+    if 'database' in current_context:
+        database = current_context.database
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        database = _vars[0]
     error = None
 
-    role_privilege = _db.insert({
+    role_privilege = database.insert({
         'table': 'roles_privileges',
         'columns': {
-            'role_id': str(args['role_id']),
+            'role_id': str(args['role_id'])
         }
     })
 

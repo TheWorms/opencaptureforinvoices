@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
-Open-Capture for Invoices is free software: you can redistribute it and/or modify
+Open-Capture is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
@@ -11,78 +11,77 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
 @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
 
 import { Component, OnInit } from '@angular/core';
 import { HttpClient, HttpHeaders } from "@angular/common/http";
-import { ActivatedRoute, Router } from "@angular/router";
+import { Router } from "@angular/router";
 import { MatDialog } from "@angular/material/dialog";
 import { UserService } from "../../../../services/user.service";
-import { FormBuilder } from "@angular/forms";
 import { AuthService } from "../../../../services/auth.service";
-import { TranslateService } from "@ngx-translate/core";
+import { _, TranslateService } from "@ngx-translate/core";
 import { NotificationService } from "../../../../services/notifications/notifications.service";
 import { SettingsService } from "../../../../services/settings.service";
-import { LastUrlService } from "../../../../services/last-url.service";
 import { PrivilegesService } from "../../../../services/privileges.service";
-import { LocalStorageService } from "../../../../services/local-storage.service";
+import { SessionStorageService } from "../../../../services/session-storage.service";
 import { Sort } from "@angular/material/sort";
-import { API_URL } from "../../../env";
+import { environment } from  "../../../env";
 import { catchError, finalize, tap } from "rxjs/operators";
 import { of } from "rxjs";
 import { ConfirmDialogComponent } from "../../../../services/confirm-dialog/confirm-dialog.component";
-import {HistoryService} from "../../../../services/history.service";
+import { ImportDialogComponent } from "../../../../services/import-dialog/import-dialog.component";
+import {FormControl} from "@angular/forms";
 
 @Component({
     selector: 'suppliers-list',
     templateUrl: './suppliers-list.component.html',
-    styleUrls: ['./suppliers-list.component.scss']
+    styleUrls: ['./suppliers-list.component.scss'],
+    standalone: false
 })
 export class SuppliersListComponent implements OnInit {
-    columnsToDisplay : string[]    = ['id', 'name', 'vat_number', 'siret', 'siren', 'iban', 'form_label', 'actions'];
-    deletePositionSrc: string      = 'assets/imgs/map-marker-alt-solid-del.svg';
-    headers          : HttpHeaders = this.authService.headers;
-    loading          : boolean     = true;
-    allSuppliers     : any         = [];
-    suppliers        : any         = [];
-    pageSize         : number      = 10;
-    pageIndex        : number      = 0;
-    total            : number      = 0;
-    offset           : number      = 0;
-    search           : string      = '';
+    columnsToDisplay   : string[]    = ['id', 'name', 'lastname', 'email', 'vat_number', 'siret', 'siren', 'actions'];
+    headers            : HttpHeaders = this.authService.headers;
+    loading            : boolean     = true;
+    loading_civilities : boolean     = true;
+    allSuppliers       : any         = [];
+    suppliers          : any         = [];
+    civilities         : any         = [];
+    pageSize           : number      = 10;
+    search             : string      = '';
+    pageIndex          : number      = 0;
+    total              : number      = 0;
+    offset             : number      = 0;
+    newCivility        : FormControl = new FormControl();
 
     constructor(
         public router: Router,
         private http: HttpClient,
         private dialog: MatDialog,
-        private route: ActivatedRoute,
         public userService: UserService,
-        private formBuilder: FormBuilder,
         private authService: AuthService,
         private translate: TranslateService,
         private notify: NotificationService,
-        private historyService: HistoryService,
         public serviceSettings: SettingsService,
-        private routerExtService: LastUrlService,
         public privilegesService: PrivilegesService,
-        private localeStorageService: LocalStorageService,
+        private sessionStorageService: SessionStorageService
     ) { }
 
     ngOnInit(): void {
-        // If we came from anoter route than profile or settings panel, reset saved settings before launch loadUsers function
-        const lastUrl = this.routerExtService.getPreviousUrl();
-        if (lastUrl.includes('accounts/suppliers') || lastUrl === '/') {
-            if (this.localeStorageService.get('suppliersPageIndex'))
-                this.pageIndex = parseInt(this.localeStorageService.get('suppliersPageIndex') as string);
-            this.offset = this.pageSize * (this.pageIndex);
-        }else
-            this.localeStorageService.remove('suppliersPageIndex');
+        if (!this.authService.headersExists) {
+            this.authService.generateHeaders();
+        }
 
-        this.http.get(API_URL + '/ws/accounts/suppliers/list', {headers: this.authService.headers}).pipe(
+        if (this.sessionStorageService.get('suppliersPageIndex')) {
+            this.pageIndex = parseInt(this.sessionStorageService.get('suppliersPageIndex') as string);
+        }
+        this.offset = this.pageSize * (this.pageIndex);
+
+        this.http.get(environment['url'] + '/ws/accounts/suppliers/list', {headers: this.authService.headers}).pipe(
             tap((data: any) => {
                 this.allSuppliers = data.suppliers;
+                this.loadSuppliers();
             }),
             catchError((err: any) => {
                 console.debug(err);
@@ -90,17 +89,33 @@ export class SuppliersListComponent implements OnInit {
                 return of(false);
             })
         ).subscribe();
-        this.loadSuppliers();
+
+        this.http.get(environment['url'] + '/ws/accounts/civilities/list', {headers: this.authService.headers}).pipe(
+            tap((data: any) => {
+                this.civilities = data.civilities;
+            }),
+            finalize(() => this.loading_civilities = false),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(false);
+            })
+        ).subscribe();
     }
 
-    loadSuppliers() {
-        this.http.get(API_URL + '/ws/accounts/suppliers/list?order=name&limit=' + this.pageSize + '&offset=' + this.offset + "&search=" + this.search, {headers: this.authService.headers}).pipe(
+    loadSuppliers(resetOffset: boolean = false) {
+        if (resetOffset) {
+            this.offset = 0;
+            this.pageIndex = 0;
+        }
+
+        this.http.get(environment['url'] + '/ws/accounts/suppliers/list?order=name&limit=' + this.pageSize + '&offset=' + this.offset + "&search=" + this.search, {headers: this.authService.headers}).pipe(
             tap((data: any) => {
                 this.suppliers = data.suppliers;
                 if (this.suppliers.length !== 0) {
                     this.total = data.suppliers[0].total;
                 }
-                this.http.get(API_URL + '/ws/forms/list?module=verifier', {headers: this.authService.headers}).pipe(
+                this.http.get(environment['url'] + '/ws/forms/verifier/list', {headers: this.authService.headers}).pipe(
                     tap((data: any) => {
                         for (const cpt in this.suppliers) {
                             for (const form of data.forms) {
@@ -128,52 +143,50 @@ export class SuppliersListComponent implements OnInit {
 
     searchSupplier(event: any) {
         this.search = event.target.value;
-        this.loadSuppliers();
+        this.loadSuppliers(true);
     }
 
     onPageChange(event: any) {
         this.pageSize = event.pageSize;
         this.offset = this.pageSize * (event.pageIndex);
-        this.localeStorageService.save('suppliersPageIndex', event.pageIndex);
+        this.sessionStorageService.save('suppliersPageIndex', event.pageIndex);
         this.loadSuppliers();
     }
 
     deleteConfirmDialog(supplierId: number, supplier: string) {
         const dialogRef = this.dialog.open(ConfirmDialogComponent, {
-            data:{
+            data: {
                 confirmTitle        : this.translate.instant('GLOBAL.confirm'),
                 confirmText         : this.translate.instant('ACCOUNTS.confirm_delete_supplier', {"supplier": supplier}),
                 confirmButton       : this.translate.instant('GLOBAL.delete'),
                 confirmButtonColor  : "warn",
-                cancelButton        : this.translate.instant('GLOBAL.cancel'),
+                cancelButton        : this.translate.instant('GLOBAL.cancel')
             },
-            width: "600px",
+            width: "600px"
         });
 
         dialogRef.afterClosed().subscribe(result => {
             if (result) {
                 this.deleteSupplier(supplierId);
-                this.historyService.addHistory('accounts', 'delete_supplier', this.translate.instant('HISTORY-DESC.delete-supplier', {supplier: supplier}));
             }
         });
     }
 
     deletePositionsConfirmDialog(supplierId: number, supplier: string) {
         const dialogRef = this.dialog.open(ConfirmDialogComponent, {
-            data:{
+            data: {
                 confirmTitle        : this.translate.instant('GLOBAL.confirm'),
                 confirmText         : this.translate.instant('ACCOUNTS.confirm_delete_supplier_positions', {"supplier": supplier}),
                 confirmButton       : this.translate.instant('GLOBAL.delete'),
                 confirmButtonColor  : "warn",
-                cancelButton        : this.translate.instant('GLOBAL.cancel'),
+                cancelButton        : this.translate.instant('GLOBAL.cancel')
             },
-            width: "600px",
+            width: "600px"
         });
 
         dialogRef.afterClosed().subscribe(result => {
             if (result) {
                 this.deleteSupplierPositions(supplierId);
-                this.historyService.addHistory('accounts', 'delete_supplier_positions', this.translate.instant('HISTORY-DESC.delete-supplier-positions', {supplier: supplier}));
             }
         });
     }
@@ -185,23 +198,24 @@ export class SuppliersListComponent implements OnInit {
                 confirmText         : this.translate.instant('ACCOUNTS.confirm_skip_auto_validate', {"supplier": supplier}),
                 confirmButton       : this.translate.instant('GLOBAL.delete'),
                 confirmButtonColor  : "warn",
-                cancelButton        : this.translate.instant('GLOBAL.cancel'),
+                cancelButton        : this.translate.instant('GLOBAL.cancel')
             },
-            width: "600px",
+            width: "600px"
         });
 
         dialogRef.afterClosed().subscribe(result => {
             if (result) {
                 this.skipAutoValidate(supplierId);
-                this.historyService.addHistory('accounts', 'skip_auto_validate', this.translate.instant('HISTORY-DESC.skip-auto-validate', {supplier: supplier}));
             }
         });
     }
 
     deleteSupplier(supplierId: number) {
         if (supplierId !== undefined) {
-            this.http.delete(API_URL + '/ws/accounts/suppliers/delete/' + supplierId, {headers: this.authService.headers}).pipe(
+            this.loading = true;
+            this.http.delete(environment['url'] + '/ws/accounts/suppliers/delete/' + supplierId, {headers: this.authService.headers}).pipe(
                 tap(() => {
+                    this.loading = false;
                     this.loadSuppliers();
                     this.notify.success(this.translate.instant('ACCOUNTS.supplier_deleted'));
                 }),
@@ -216,8 +230,10 @@ export class SuppliersListComponent implements OnInit {
 
     skipAutoValidate(supplierId: number) {
         if (supplierId !== undefined) {
-            this.http.delete(API_URL + '/ws/accounts/suppliers/skipAutoValidate/' + supplierId, {headers: this.authService.headers}).pipe(
+            this.loading = true;
+            this.http.put(environment['url'] + '/ws/accounts/suppliers/skipAutoValidate/' + supplierId, {}, {headers: this.authService.headers}).pipe(
                 tap(() => {
+                    this.loading = false;
                     this.notify.success(this.translate.instant('ACCOUNTS.skip_validated_success'));
                 }),
                 catchError((err: any) => {
@@ -231,8 +247,10 @@ export class SuppliersListComponent implements OnInit {
 
     deleteSupplierPositions(supplierId: number) {
         if (supplierId !== undefined) {
-            this.http.delete(API_URL + '/ws/accounts/suppliers/deletePositions/' + supplierId, {headers: this.authService.headers}).pipe(
+            this.loading = true;
+            this.http.delete(environment['url'] + '/ws/accounts/suppliers/deletePositions/' + supplierId, {headers: this.authService.headers}).pipe(
                 tap(() => {
+                    this.loading = false;
                     this.notify.success(this.translate.instant('ACCOUNTS.positions_deleted'));
                 }),
                 catchError((err: any) => {
@@ -271,14 +289,25 @@ export class SuppliersListComponent implements OnInit {
     }
 
     getReferenceFile() {
-        this.http.get(API_URL + '/ws/accounts/supplier/getReferenceFile', {headers: this.authService.headers}).pipe(
-            tap((data: any) => {
-                const mimeType = data.mimetype;
-                const referenceFile = 'data:' + mimeType + ';base64, ' + data.file;
-                const link = document.createElement("a");
-                link.href = referenceFile;
-                link.download = data.filename;
-                link.click();
+        this.loading = true;
+        this.http.get(environment['url'] + '/ws/accounts/supplier/fillReferenceFile', {headers: this.authService.headers}).pipe(
+            tap(() => {
+                this.http.get(environment['url'] + '/ws/accounts/supplier/getReferenceFile', {headers: this.authService.headers}).pipe(
+                    tap((data: any) => {
+                        const mimeType = data.mimetype;
+                        const referenceFile = 'data:' + mimeType + ';base64, ' + data.file;
+                        const link = document.createElement("a");
+                        link.href = referenceFile;
+                        link.download = data.filename;
+                        link.click();
+                    }),
+                    finalize(() => this.loading = false),
+                    catchError((err: any) => {
+                        console.debug(err);
+                        this.notify.handleErrors(err);
+                        return of(false);
+                    })
+                ).subscribe();
             }),
             finalize(() => this.loading = false),
             catchError((err: any) => {
@@ -289,21 +318,88 @@ export class SuppliersListComponent implements OnInit {
         ).subscribe();
     }
 
-    importSuppliers(event: any) {
-        const file:File = event.target.files[0];
-        if (file) {
-            const formData: FormData = new FormData();
-            formData.append(file.name, file);
-            this.http.post(API_URL + '/ws/accounts/supplier/importSuppliers', formData, {headers: this.authService.headers},
-            ).pipe(
+    importSuppliers() {
+        const columns = ['name', 'vat_number', 'siret', 'siren', 'duns', 'bic', 'rccm', 'iban', 'email', 'address1',
+            'address2', 'postal_code', 'city', 'country', 'footer_coherence', 'document_lang', 'default_currency'];
+        const dialogRef = this.dialog.open(ImportDialogComponent, {
+            data: {
+                rows: [],
+                extension: 'CSV',
+                skipHeader: true,
+                allowColumnsSelection : true,
+                title : this.translate.instant('ACCOUNTS.import_suppliers'),
+                availableColumns : columns,
+                selectedColumns : columns
+            },
+            width: "1200px"
+        });
+        dialogRef.afterClosed().subscribe(result => {
+            if (result) {
+                const formData: FormData = new FormData();
+                for (const file of result.fileControl.value) {
+                    if (result.fileControl.status === 'VALID') {
+                        formData.append(file['name'], file);
+                    } else {
+                        this.notify.handleErrors(this.translate.instant('DATA-IMPORT.extension_unauthorized', {"extension": 'CSV'}));
+                        return;
+                    }
+                }
+
+                formData.set('selectedColumns', result.selectedColumns);
+                formData.set('skipHeader', result.skipHeader);
+
+                this.http.post(environment['url'] + '/ws/accounts/supplier/importSuppliers', formData, {headers: this.authService.headers},
+                ).pipe(
+                    tap(() => {
+                        this.notify.success(this.translate.instant('ACCOUNTS.suppliers_referencial_loaded'));
+                    }),
+                    catchError((err: any) => {
+                        console.debug(err);
+                        this.notify.handleErrors(err);
+                        return of(false);
+                    })
+                ).subscribe();
+            }
+        });
+    }
+
+    deleteCivility(civilityId: number) {
+        if (civilityId !== undefined) {
+            this.loading_civilities = true;
+            this.http.delete(environment['url'] + '/ws/accounts/civilities/delete/' + civilityId, {headers: this.authService.headers}).pipe(
                 tap(() => {
-                    this.notify.success(this.translate.instant('ACCOUNTS.suppliers_referencial_loaded'));
-                    this.loading = true;
-                    this.loadSuppliers();
+                    this.civilities.forEach((civility: any, index: number) => {
+                        if (civility.id === civilityId) {
+                            this.civilities.splice(index, 1);
+                        }
+                    });
+                    this.notify.success(this.translate.instant('ACCOUNTS.civility_deleted'));
+                }),
+                finalize(() => this.loading_civilities = false),
+                catchError((err: any) => {
+                    console.debug(err);
+                    this.notify.handleErrors(err);
+                    return of(false);
+                })
+            ).subscribe();
+        }
+    }
+
+    createCivility() {
+        if (this.newCivility.value !== undefined && this.newCivility.value !== '') {
+            this.loading_civilities = true;
+            this.http.post(environment['url'] + '/ws/accounts/civilities/create', {label: this.newCivility.value}, {headers: this.authService.headers}).pipe(
+                tap((data: any) => {
+                    this.civilities.push({id: data.id, label: this.newCivility.value});
+                    this.notify.success(this.translate.instant('ACCOUNTS.civility_added'));
+                }),
+                finalize(() => {
+                    this.loading_civilities = false;
+                    this.newCivility.setValue('');
                 }),
                 catchError((err: any) => {
                     console.debug(err);
-                    this.notify.handleErrors(err, '/accounts/suppliers/list');
+                    this.notify.handleErrors(err);
                     return of(false);
                 })
             ).subscribe();

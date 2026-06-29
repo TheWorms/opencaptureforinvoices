@@ -1,0 +1,77 @@
+<mat-sidenav-container class="absolute left-0 right-0 bottom-0" style="top: 4.1rem" [autosize]="true">
+    <mat-sidenav #sidenav mode="side" [opened]="true" class="settings-menu-nav" [class.w-20]="this.serviceSettings.minimizeSideNav">
+        <app-settings-menu [minimizeSideNav]="this.serviceSettings.minimizeSideNav"></app-settings-menu>
+    </mat-sidenav>
+    <mat-sidenav-content class="bg-white overflow-hidden">
+        <div class="settings_header z-50">
+            <div class="flex">
+                <button mat-icon-button (click)="this.serviceSettings.minimizeSideNav = !this.serviceSettings.minimizeSideNav;">
+                    <i [class.transform]="!sidenav.opened" [class.rotate-180]="!sidenav.opened" class="fa-solid fa-stream text-2xl text-gray-900"></i>
+                </button>
+            </div>
+            <h3 class="text-center m-0">{{ this.serviceSettings.getTitle() }}</h3>
+            <div class="settings_search">
+                <button mat-icon-button (click)="sidenav2.toggle();">
+                    <i [class.transform]="sidenav2.opened" [class.rotate-180]="sidenav2.opened"
+                       class="fa-solid fa-stream text-xl text-gray-900"></i>
+                </button>
+            </div>
+        </div>
+        <hr class="border-green-400 relative z-50">
+        <app-document-type-factory [settings]="{'canFolderBeSelected': false}"
+                                   (selectedFormOutput)="getSelectedForm($event)">
+        </app-document-type-factory>
+    </mat-sidenav-content>
+    <mat-sidenav #sidenav2 mode="side" [opened]="true" position="end" class="available-fields w-1/4 flex flex-col h-full border-r border-green-400">
+        <h3 class="bg-green-400/60 text-center text-gray-900 m-0 p-4">
+            {{ 'DOCTYPE.add_folder' | translate }}
+        </h3>
+        <mat-divider class="border-green-400"></mat-divider>
+        <form (ngSubmit)="form.valid && addFolder()" [formGroup]="form">
+            <div class="grid grid-cols-1 gap-x-2 gap-y-2 m-2">
+                <mat-form-field>
+                    <mat-label>{{ 'DOCTYPE.folder' | translate }}</mat-label>
+                    <mat-select id='folder' [formControlName]="'folder'">
+                        <mat-option [value]="noMasterFolder">
+                            {{ 'DOCTYPE.no_master' | translate }}
+                        </mat-option>
+                        @for (folder of documentTypeFactoryComponent.treeDataObj.doctypeData; track folder.code) {
+                            @if (folder.type === 'folder' && folder['formId'] === selectedFormId) {
+                                <mat-option [value]="folder.code">
+                                    {{ folder.label }}
+                                </mat-option>
+                            }
+                        }
+                    </mat-select>
+                    @if (form.get('folder')!.hasError('required')) {
+                        <mat-error>{{ 'AUTH.field_required' | translate }}</mat-error>
+                    }
+                </mat-form-field>
+                @for (field of fields; track field['id']) {
+                    @if (field['type'] === 'text') {
+                        <mat-form-field>
+                            <mat-label>{{ field['label'] | translate }}</mat-label>
+                            <input matInput [formControlName]="field['id']" [type]="field['type']"
+                                   [placeholder]="field.placeholder" [required]="field['required']">
+                            @if (field['hint']) {
+                                <mat-hint>{{ field['hint'] }}</mat-hint>
+                            }
+                            @if (form.get(field['id'])!.hasError('required')) {
+                                <mat-error>{{ 'AUTH.field_required' | translate }}</mat-error>
+                            }
+                        </mat-form-field>
+                    } @else if (field['type'] === 'slide') {
+                        <div class="text-center p-4">
+                            <mat-slide-toggle [formControlName]="field['id']">
+                                {{ field['label'] | translate }}
+                            </mat-slide-toggle>
+                        </div>
+                    }
+                }
+                <button class="m-auto w-7/12 border-solid border-green-400 border bg-green-400 text-white hover:bg-transparent hover:text-gray-900 transition duration-300" type="submit" mat-button>
+                    {{ 'DOCTYPE.add' | translate }}
+                </button>
+            </div>
+        </form>
+    </mat-sidenav>
+</mat-sidenav-container>

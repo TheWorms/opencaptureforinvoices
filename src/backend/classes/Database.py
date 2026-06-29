@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,43 +11,46 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 
 
 class Database:
     def __init__(self, log, db_name=None, user=None, pwd=None, host=None, port=None, conn=None):
-        self.conn = conn
         self.log = log
+        self.pwd = pwd
         self.host = host
         self.port = port
         self.user = user
-        self.pwd = pwd
+        self.conn = conn
         self.db_name = db_name
+
         self.connect()
 
     def connect(self):
         if self.conn is None:
             try:
-                self.conn = psycopg2.connect(
-                    "dbname     =" + self.db_name +
-                    " user      =" + self.user +
-                    " password  =" + self.pwd +
-                    " host      =" + self.host +
-                    " port      =" + self.port)
+                self.conn = psycopg.connect(
+                    dbname=self.db_name,
+                    user=self.user,
+                    password=self.pwd,
+                    host=self.host,
+                    port=self.port,
+                    row_factory=dict_row)
                 self.conn.autocommit = True
-            except (psycopg2.OperationalError, psycopg2.ProgrammingError) as pgsql_error:
+            except (psycopg.OperationalError, psycopg.ProgrammingError) as pgsql_error:
                 self.log.error('PGSQL connection error : ' + str(pgsql_error), False)
-                exit()
+                self.conn = False
 
     def select(self, args):
         if 'table' not in args or 'select' not in args:
             self.log.error('One or more required args are empty', False)
+        elif not isinstance(args['table'], list):
+            self.log.error('Table argument must be a list', False)
         else:
             tmp_table = args['table']
             args['table'] = args['table'][0]
@@ -91,12 +95,44 @@ class Database:
                 args['data'] = []
 
             query = "SELECT " + select + " FROM " + args['table'] + where + group_by + order_by + limit + offset
-            cursor = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
             try:
-                cursor.execute(query, args['data'])
-                return cursor.fetchall()
-            except psycopg2.OperationalError as pgsql_error:
+                with self.conn.cursor() as cursor:
+                    cursor.execute(query, args['data'])
+                    res = cursor.fetchall()
+                return res
+            except psycopg.OperationalError as pgsql_error:
+                self.log.error('Error while querying SELECT : ' + str(pgsql_error), False)
+                return False
+
+    def delete(self, args):
+        if 'table' not in args or 'where' not in args:
+            self.log.error('One or more required args are empty', False)
+        elif not isinstance(args['table'], list):
+            self.log.error('Table argument must be a list', False)
+        else:
+            tmp_table = args['table']
+            args['table'] = args['table'][0]
+            if 'left_join' in args:
+                if (len(tmp_table) - 1) != len(args['left_join']):
+                    self.log.error("Number of tables doesn't match with number of joins", False)
+                    self.log.error(str(args), False)
+                else:
+                    cpt = 1
+                    for joins in args['left_join']:
+                        args['table'] += " LEFT JOIN " + tmp_table[cpt] + " ON " + joins + " "
+                        cpt = cpt + 1
+
+            where = ' WHERE ' + ' AND '.join(args['where']) + ' '
+
+            if 'data' not in args or args['data'] in ['', []]:
+                args['data'] = []
+
+            query = "DELETE FROM " + args['table'] + where
+            try:
+                with self.conn.cursor() as cursor:
+                    cursor.execute(query, args['data'])
+                return True
+            except psycopg.OperationalError as pgsql_error:
                 self.log.error('Error while querying SELECT : ' + str(pgsql_error), False)
                 return False
 
@@ -104,48 +140,75 @@ class Database:
         if 'table' not in args:
             self.log.error('One or more required args are empty', False)
         else:
-            columns_list = []
-            values_list = []
+            data = []
+            values = ''
+            columns = ''
             for column in args['columns']:
                 if args['columns'][column] is not None:
-                    columns_list.append(column)
-                    values_list.append(str(args['columns'][column]).replace("'", "''").replace('\x0c', ''))
+                    values += "%s, "
+                    columns += column + ", "
+                    data.append(str(args['columns'][column]).replace('\x0c', ''))
 
-            columns = ", ".join(columns_list)
-            values = "'" + "', '".join(values_list) + "'"
+            values = values.rstrip(', ')
+            columns = columns.rstrip(', ')
 
             query = "INSERT INTO " + args['table'] + " (" + columns + ") VALUES (" + values + ") RETURNING id"
-            cursor = self.conn.cursor()
             try:
-                cursor.execute(query)
-                new_row_id = cursor.fetchone()[0]
-                self.conn.commit()
+                with self.conn.cursor() as cursor:
+                    cursor.execute(query, data)
+                    new_row_id = cursor.fetchone()['id']
                 return new_row_id
-            except psycopg2.OperationalError as pgsql_error:
+            except (psycopg.OperationalError, psycopg.errors.UniqueViolation) as pgsql_error:
                 self.log.error('Error while querying INSERT : ' + str(pgsql_error), False)
-                return False
+                return str(pgsql_error)
 
     def update(self, args):
         if args['table'] == [] or args['set'] == []:
             self.log.error('One or more required args are empty', False)
+        elif not isinstance(args['table'], list):
+            self.log.error('Table argument must be a list', False)
         else:
-            query_list = []
             data = []
+            query_set = ''
             for column in args['set']:
-                if args['set'][column] is not None:
-                    query_list.append(column + " = %s")
+                if args['set'][column] is not None and (type(args['set'][column]) not in (bool, int)
+                                                        and 'jsonb_set' in args['set'][column]):
+                    query_set += column + " = " + args['set'][column] + ", "
+                else:
+                    query_set += column + " = %s, "
                     data.append(args['set'][column])
 
+            query_set = query_set.rstrip(', ')
             args['data'] = data + args['data']
-            _set = ", ".join(query_list)
             where = ' AND '.join(args['where'])
 
-            query = "UPDATE " + args['table'][0] + " SET " + _set + " WHERE " + where
-            cursor = self.conn.cursor()
+            query = "UPDATE " + args['table'][0] + " SET " + query_set + " WHERE " + where
             try:
-                cursor.execute(query, args['data'])
-                self.conn.commit()
+                with self.conn.cursor() as cursor:
+                    cursor.execute(query, args['data'])
                 return True, ''
-            except (psycopg2.OperationalError, psycopg2.errors.InvalidTextRepresentation) as pgsql_error:
+            except (psycopg.OperationalError, psycopg.errors.InvalidTextRepresentation) as pgsql_error:
                 self.log.error('Error while querying UPDATE : ' + str(pgsql_error), False)
-                return False, e
+                return False, pgsql_error
+
+    def get_sequence_value(self, name):
+        query = f"SELECT last_value FROM {name};"
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(query)
+                last_value = cursor.fetchone()
+            return last_value['last_value']
+        except psycopg.OperationalError as pgsql_error:
+            self.log.error('Error while querying SELECT : ' + str(pgsql_error), False)
+            return False
+
+    def set_sequence_value(self, name, value):
+        query = f"SELECT setval('{name}', {value});"
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(query)
+                last_value = cursor.fetchone()
+            return last_value
+        except psycopg.OperationalError as pgsql_error:
+            self.log.error('Error while querying SELECT : ' + str(pgsql_error), False)
+            return False

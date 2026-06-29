@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
- Open-Capture for Invoices is free software: you can redistribute it and/or modify
+ Open-Capture is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
  the Free Software Foundation, either version 3 of the License, or
  (at your option) any later version.
@@ -11,34 +11,37 @@
  GNU General Public License for more details.
 
  You should have received a copy of the GNU General Public License
- along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+ along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
  @dev : Oussama Brich <oussama.brich@edissyum.com> */
 
-import {OnInit, Component} from '@angular/core';
-import {TranslateService} from "@ngx-translate/core";
-import {SettingsService} from "../../../../services/settings.service";
+import { OnInit, Component } from '@angular/core';
+import { _, TranslateService } from "@ngx-translate/core";
+import { SettingsService } from "../../../../services/settings.service";
 
-import {Router} from "@angular/router";
-import {UserService} from "../../../../services/user.service";
-import {PrivilegesService} from "../../../../services/privileges.service";
-import {API_URL} from "../../../env";
-import {catchError, tap} from "rxjs/operators";
-import {of} from "rxjs";
-import {HttpClient} from "@angular/common/http";
-import {AuthService} from "../../../../services/auth.service";
-import {NotificationService} from "../../../../services/notifications/notifications.service";
+import { Router } from "@angular/router";
+import { UserService } from "../../../../services/user.service";
+import { PrivilegesService } from "../../../../services/privileges.service";
+import { environment } from  "../../../env";
+import { catchError, tap } from "rxjs/operators";
+import { of } from "rxjs";
+import { HttpClient } from "@angular/common/http";
+import { AuthService } from "../../../../services/auth.service";
+import { NotificationService } from "../../../../services/notifications/notifications.service";
 
 @Component({
     selector: 'app-separator',
     templateUrl: './separator.component.html',
-    styleUrls: ['./separator.component.scss']
+    styleUrls: ['./separator.component.scss'],
+    standalone: false
 })
 export class SeparatorComponent implements OnInit {
-    private selectedDocType: any;
+    private selectedDoctype: any;
     public separator: any      = {
-        'fileUrl': '',
-        'thumbnailUrl': ''
+        'total'      : 0,
+        'current'    : 0,
+        'fileUrl'    : '',
+        'thumbnails' : []
     };
     loading           : boolean = false;
     loadingSeparator  : boolean = false;
@@ -58,7 +61,7 @@ export class SeparatorComponent implements OnInit {
             id          : 'docTypeSeparator',
             name        : this.translate.instant("SPLITTER.doc_type_separator"),
             disabled    : true
-        },
+        }
     ];
 
     constructor(
@@ -69,39 +72,35 @@ export class SeparatorComponent implements OnInit {
         public privilegesService: PrivilegesService,
         private http: HttpClient,
         private authService: AuthService,
-        private notify:NotificationService,
+        private notify:NotificationService
     ) { }
 
     ngOnInit(): void {
         this.serviceSettings.init();
         this.generateSeparator( {
-            'type'  : 'bundleSeparator',
-            'key'   : '',
-            'label' : ''
+            'id'    : undefined,
+            'type'  : 'bundleSeparator'
         });
     }
 
     onChangeType() {
-        let args = {};
+        let args;
         if (this.selectedSeparator === "bundleSeparator") {
             args = {
-                'type'  : 'bundleSeparator',
-                'key'   : '',
-                'label' : ''
+                'id'   : undefined,
+                'type' : 'bundleSeparator'
             };
         }
         else if (this.selectedSeparator === "documentSeparator") {
             args = {
-                'type'  : 'documentSeparator',
-                'key'   : '',
-                'label' : ''
+                'id'   : undefined,
+                'type' : 'documentSeparator'
             };
         }
-        else{
+        else {
             args = {
-                'type'  : 'docTypeSeparator',
-                'key'   : this.selectedDocType ? this.selectedDocType.key : '',
-                'label' : this.selectedDocType ? this.selectedDocType.label : ''
+                'id'   : this.selectedDoctype.id ? this.selectedDoctype.id : null,
+                'type' : 'docTypeSeparator'
             };
         }
         this.generateSeparator(args);
@@ -109,22 +108,22 @@ export class SeparatorComponent implements OnInit {
 
     getOutPut($event: any) {
         this.selectedSeparator  = 'docTypeSeparator';
-        this.selectedDocType    = $event;
-        const args = {
-            'type': 'docTypeSeparator',
-            'key': this.selectedDocType.key,
-            'label': this.selectedDocType.label
-        };
-        this.generateSeparator(args);
+        this.selectedDoctype    = $event;
+        this.generateSeparator({
+            'type' : 'docTypeSeparator',
+            'id'   : this.selectedDoctype.id
+        });
     }
 
     generateSeparator(args: any) {
         this.loadingSeparator = true;
-        this.http.post(API_URL + '/ws/doctypes/generateSeparator',  args,{headers: this.authService.headers}).pipe(
+        this.http.post(environment['url'] + '/ws/doctypes/generateSeparator', args, {headers: this.authService.headers}).pipe(
             tap((data: any) => {
-                this.separator.fileUrl = "data:application/pdf;base64," + data.encoded_file;
-                this.separator.thumbnailUrl = "data:image/jpeg;base64," + data.encoded_thumbnail;
-                this.loadingSeparator = false;
+                this.separator.total      = data.total;
+                this.separator.fileUrl    = data.encoded_file;
+                this.separator.thumbnails = data.encoded_thumbnails;
+                this.separator.current    = 1;
+                this.loadingSeparator     = false;
             }),
             catchError((err: any) => {
                 console.debug(err);
@@ -136,8 +135,8 @@ export class SeparatorComponent implements OnInit {
     }
 
     downloadSeparator() {
-        const fileName = this.selectedSeparator + (this.selectedDocType ? '_' + this.selectedDocType.key: '');
-        this.downloadPdf(this.separator.fileUrl,fileName);
+        const fileName = this.selectedSeparator + (this.selectedDoctype ? '_' + this.selectedDoctype.key : '');
+        this.downloadPdf(this.separator.fileUrl, fileName);
     }
 
     downloadPdf(base64String: any, fileName:any) {
@@ -145,5 +144,11 @@ export class SeparatorComponent implements OnInit {
         link.href = base64String;
         link.download = `${fileName}.pdf`;
         link.click();
+    }
+
+    moveCurrentThumbnail(step: number) {
+        if (this.separator.current + step <= this.separator.total && this.separator.current + step > 0) {
+            this.separator.current += step;
+        }
     }
 }

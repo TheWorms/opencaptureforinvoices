@@ -1,33 +1,81 @@
-<div class="mt-32 -mb-32 flex justify-center h-20">
-    <img src="assets/imgs/logo_opencapture.png" alt="Open-Capture For Invoices logo">
-</div>
-<div class="flex justify-center items-center" style="height: 85vh">
-    <mat-card class="text-center w-full lg:w-1/4">
-        <mat-card-title class="mb-10">
-            {{ 'GLOBAL.login' | translate }}
-        </mat-card-title>
-        <mat-card-content>
-            <form [formGroup]="loginForm" (ngSubmit)="onSubmit()">
-                <mat-form-field class="block">
-                    <mat-label>{{ 'USER.username' | translate }}</mat-label>
-                    <input matInput formControlName="username" type="text" placeholder="{{ 'USER.username' | translate }}" required>
-                    <mat-error *ngIf="loginForm.controls.username.invalid">{{ getErrorMessage('username') }}</mat-error>
-                </mat-form-field>
-                <mat-form-field class="block">
-                    <mat-label>{{ 'USER.password' | translate }}</mat-label>
-                    <input matInput formControlName="password" type="password" placeholder="{{ 'USER.password' | translate }}" required>
-                    <mat-error *ngIf="loginForm.controls.password.invalid">{{ getErrorMessage('password') }}</mat-error>
-                </mat-form-field>
-                <button mat-button [disabled]="this.processLogin"
-                        class="border-solid border-green-400 border hover:bg-green-400 hover:text-white transition duration-300" type="submit">
-                    {{ 'AUTH.login' | translate }}
-                </button>
-            </form>
-        </mat-card-content>
-        <span class="relative my-4 text-green-400 font-bold">
-            <a href="https://kutt.it/GuideDutilisation" target="_blank">
-                {{ 'GLOBAL.utilisation_guide' | translate }}
-            </a>
-        </span>
-    </mat-card>
+<div class="min-h-screen flex">
+    @if (this.loading) {
+        <app-loader></app-loader>
+    }
+    <div class="w-full flex items-center justify-center text-center flex-col">
+        @if (this.loginImage) {
+            <div class="w-11/12 max-w-md">
+                <img class="m-auto" [src]="this.loginImage" alt="Open-Capture logo">
+                <mat-card-subtitle class="relative top-2" [innerHTML]="this.loginTopMessage"></mat-card-subtitle>
+            </div>
+        }
+        <mat-card class="text-center m-6 mb-0 w-11/12 max-w-md">
+            <mat-card-title class="m-5">
+                {{ 'GLOBAL.login' | translate }}
+            </mat-card-title>
+            <mat-card-content>
+                <form [formGroup]="this.loginForm" (ngSubmit)="onSubmit()">
+                    <mat-form-field class="block">
+                        <mat-label>{{ 'USER.username' | translate }}</mat-label>
+                        <input matInput id="username" formControlName="username" type="text" placeholder="{{ 'USER.username' | translate }}" required>
+                        @if (this.loginForm.controls.username.invalid) {
+                            <mat-error>{{ getErrorMessage('username') }}</mat-error>
+                        }
+                    </mat-form-field>
+                    <mat-form-field class="block">
+                        <mat-label>{{ 'USER.password' | translate }}</mat-label>
+                        <input matInput id="password" autocomplete="off" formControlName="password"
+                               [type]="this.showPassword ? 'text' : 'password'"
+                               placeholder="{{ 'USER.password' | translate }}" required>
+                        <mat-icon matSuffix (click)="this.showPassword = !this.showPassword" class="text-green-400 relative cursor-pointer -top-0.5 text-base">
+                            <i class="fa fa-1x" [class.fa-eye-slash]="!this.showPassword" [class.fa-eye]="this.showPassword"></i>
+                        </mat-icon>
+                        @if (this.loginForm.controls.password.invalid) {
+                            <mat-error>
+                                {{ getErrorMessage('password') }}
+                            </mat-error>
+                        }
+                        @if (this.enableLoginMethodName === 'ldap') {
+                            <mat-hint align="end">
+                                <span class="underline decoration-1">
+                                    {{ this.enableLoginMethodName | uppercase }} {{ 'LOGIN-METHODS.enabled' | translate }}
+                                </span>
+                            </mat-hint>
+                        }
+                    </mat-form-field>
+                    <button id="login" mat-button [disabled]="this.processLogin || this.isConnectionBtnDisabled || this.loginForm.invalid"
+                            [class.invalid_button]="this.processLogin || this.isConnectionBtnDisabled || this.loginForm.invalid"
+                            [class.valid_button]="!(this.processLogin || this.isConnectionBtnDisabled || this.loginForm.invalid)"
+                            class="mb-4 mt-2 p-6" type="submit" style="max-width: 250px;">
+                        @if (!this.processLogin && !this.isConnectionBtnDisabled) {
+                            {{ 'AUTH.login' | translate }}
+                        }
+                        @if (this.processLogin || this.isConnectionBtnDisabled) {
+                            <i class="fa-solid text-2xl fa-circle-notch fa-spin text-gray-900"></i>
+                        }
+                    </button>
+                    @if (this.enableLoginMethodName === 'default') {
+                        <div class="text-right text-gray-900">
+                            <a routerLink="/forgotPassword">
+                                {{ 'AUTH.forgot_password' | translate }}
+                            </a>
+                        </div>
+                    }
+                </form>
+            </mat-card-content>
+        </mat-card>
+        <span class="mt-5" [innerHTML]="this.loginBottomMessage"></span>
+        <div class="flex flex-col gap-y-2 absolute bottom-px right-px">
+            <div class="flex gap-x-2 mr-2 mb-2">
+                <span class="text-gray-900 text-sm text-right">
+                    Open-Capture version {{ environment.version }}
+                    <br>
+                    Powered by
+                    <a class="text-green-400" href="https://edissyum.com/" target="_blank" rel="noopener">
+                        Edissyum Consulting
+                    </a>
+                </span>
+            </div>
+        </div>
+    </div>
 </div>

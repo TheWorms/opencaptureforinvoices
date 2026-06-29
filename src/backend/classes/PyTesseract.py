@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,8 +11,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 
@@ -22,7 +22,7 @@ import xml.etree.ElementTree as Et
 
 
 class PyTesseract:
-    def __init__(self, locale, log, config):
+    def __init__(self, locale, log, config, docservers):
         self.log = log
         self.tool = ''
         self.text = ''
@@ -31,9 +31,10 @@ class PyTesseract:
         self.config = config
         self.footer_text = ''
         self.header_text = ''
-        self.OCRErrorsTable = {}
+        self.ocr_errors_table = {}
         self.footer_last_text = ''
         self.header_last_text = ''
+        self.docservers = docservers
 
         tools = pyocr.get_available_tools()
         self.tool = tools[0]
@@ -47,8 +48,8 @@ class PyTesseract:
                 lang=self.lang
             )
             return text
-        except pytesseract.pytesseract.TesseractError as t:
-            self.log.error('Tesseract ERROR : ' + str(t))
+        except pytesseract.pytesseract.TesseractError as _t:
+            self.log.error('Tesseract ERROR : ' + str(_t))
 
     def line_box_builder(self, img):
         try:
@@ -57,16 +58,15 @@ class PyTesseract:
                 lang=self.lang,
                 builder=pyocr.builders.LineBoxBuilder(6)  # Argument is the choosen PSM
             )
-
-        except pytesseract.pytesseract.TesseractError as t:
-            self.log.error('Tesseract ERROR : ' + str(t))
+        except pytesseract.pytesseract.TesseractError as _t:
+            self.log.error('Tesseract ERROR : ' + str(_t))
 
     def get_ocr_errors_table(self):
-        config_path = self.config.cfg['GLOBAL']['ocrerrorpath']
+        config_path = self.docservers['CONFIG_PATH'] + '/OCR_ERRORS.xml'
         root = Et.parse(config_path).getroot()
 
         for element in root:
-            self.OCRErrorsTable[element.tag] = {}
+            self.ocr_errors_table[element.tag] = {}
             for child in element.findall('.//ELEMENT'):
                 fix, misread = list(child)
-                self.OCRErrorsTable[element.tag][fix.text] = misread.text
+                self.ocr_errors_table[element.tag][fix.text] = misread.text

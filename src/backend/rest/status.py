@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,21 +11,40 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 
-from src.backend.import_controllers import status
+from flask_babel import gettext
+from src.backend.functions import rest_validator
 from flask import Blueprint, make_response, jsonify, request
+from src.backend.controllers import auth, status, privileges
 
 
 bp = Blueprint('status', __name__, url_prefix='/ws/')
 
 
-@bp.route('status/list', methods=['GET'])
-def status_list():
-    module = request.args['module']
-    _status = status.get_status(module)
-    return make_response(jsonify(_status[0])), _status[1]
+@bp.route('status/<string:module>/list', methods=['GET'])
+@auth.token_required
+def status_list(module):
+    list_priv = ['access_verifier | update_status'] if module == 'verifier' else \
+        ['access_splitter | update_status_splitter']
+    if not privileges.has_privileges(request.environ['user_id'], list_priv):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': f'/status/{module}/list'}), 403
 
+    check, message = rest_validator(request.args, [
+        {'id': 'time', 'type': str, 'mandatory': False},
+        {'id': 'totals', 'type': bool, 'mandatory': False},
+        {'id': 'user_id', 'type': int, 'mandatory': False},
+        {'id': 'form_id', 'type': str, 'mandatory': False}
+    ])
+
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    args = request.args
+    _status = status.get_status(args, module)
+    return make_response(jsonify(_status[0])), _status[1]

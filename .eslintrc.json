@@ -15,11 +15,11 @@
                 "createDefaultProgram": true
             },
             "extends": [
-                "plugin:@angular-eslint/ng-cli-compat",
-                "plugin:@angular-eslint/ng-cli-compat--formatting-add-on",
-                "plugin:@angular-eslint/template/process-inline-templates"
+                "plugin:@angular-eslint/recommended",
+                "plugin:@typescript-eslint/recommended"
             ],
             "rules": {
+                "@typescript-eslint/no-this-alias": "off",
                 "@typescript-eslint/quotes": "off",
                 "@typescript-eslint/no-shadow": [
                     "off",
@@ -33,6 +33,15 @@
                         "default": "array"
                     }
                 ],
+                "comma-spacing": [
+                    "error", {
+                        "before": false,
+                        "after": true
+                    }
+                ],
+                "comma-dangle": ["error", "never"],
+                "semi": [2, "always"],
+                "space-infix-ops": "error",
                 "@typescript-eslint/dot-notation": "off",
                 "@typescript-eslint/prefer-for-of": "off",
                 "@angular-eslint/component-selector": "off",
@@ -41,6 +50,7 @@
                 "@typescript-eslint/naming-convention": "off",
                 "@typescript-eslint/no-inferrable-types": "off",
                 "@typescript-eslint/no-unused-expressions": "off",
+                "@typescript-eslint/no-non-null-assertion": "off",
                 "@typescript-eslint/member-delimiter-style": [
                     "error",
                     {
@@ -50,13 +60,14 @@
                         },
                         "singleline": {
                             "delimiter": "semi",
-                            "requireLast": false
+                            "requireLast": true
                         }
                     }
                 ],
                 "@typescript-eslint/type-annotation-spacing": "off",
+                "@typescript-eslint/no-explicit-any": "off",
                 "radix": "off",
-                "curly": "off",
+                "curly": "error",
                 "one-var": [
                     "off",
                     "never"
@@ -68,10 +79,15 @@
                 "guard-for-in": "off",
                 "no-fallthrough": "off",
                 "object-shorthand": "off",
+                "keyword-spacing": "error",
                 "no-underscore-dangle": "off",
+                "no-trailing-spaces": "error",
+                "space-before-blocks": "error",
                 "jsdoc/check-alignment": "off",
                 "jsdoc/newline-after-description": "off",
-                "prefer-arrow/prefer-arrow-functions": "off"
+                "prefer-arrow/prefer-arrow-functions": "off",
+                "semi-spacing": ["error", {"before": false, "after": true}],
+                "no-multiple-empty-lines": ["error", { "max": 1, "maxEOF": 0 }]
             }
         },
         {

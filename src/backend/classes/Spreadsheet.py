@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,192 +11,70 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 
-import os
+import csv
+import math
 import json
 import pandas as pd
-from pyexcel_ods3 import get_data, save_data
 
 
 class Spreadsheet:
-    def __init__(self, log, config):
+    def __init__(self, log, docservers, config):
         self.log = log
-        self.referencialSuppplierSpreadsheet = config.cfg['REFERENCIAL']['referencialsupplierdocumentpath']
-        self.referencialSuppplierIndex = config.cfg['REFERENCIAL']['referencialsupplierindexpath']
-        self.referencialSupplierArray = {}
-        self.referencialSupplierData = {}
+        self.referencial_supplier_spreadsheet = (docservers['REFERENTIALS_PATH'] + '/' +
+                                                 config.cfg['REFERENCIAL']['referencialsupplierdocument'])
+        self.referencial_supplier_index = (docservers['REFERENTIALS_PATH'] + '/' +
+                                           config.cfg['REFERENCIAL']['referencialsupplierindex'])
+        self.referencial_supplier_array = {}
+        self.referencial_supplier_data = {}
 
-        with open(self.referencialSuppplierIndex, encoding='UTF-8') as file:
+        with open(self.referencial_supplier_index, encoding='utf-8') as file:
             fp = json.load(file)
-            self.referencialSupplierArray['name'] = fp['name']
-            self.referencialSupplierArray['SIRET'] = fp['SIRET']
-            self.referencialSupplierArray['SIREN'] = fp['SIREN']
-            self.referencialSupplierArray['IBAN'] = fp['IBAN']
-            self.referencialSupplierArray['VATNumber'] = fp['VATNumber']
-            self.referencialSupplierArray['address1'] = fp['address1']
-            self.referencialSupplierArray['address2'] = fp['address2']
-            self.referencialSupplierArray['addressTown'] = fp['addressTown']
-            self.referencialSupplierArray['addressCountry'] = fp['addressCountry']
-            self.referencialSupplierArray['addressPostalCode'] = fp['addressPostalCode']
-            self.referencialSupplierArray['positions_mask_id'] = fp['positions_mask_id']
-            self.referencialSupplierArray['get_only_raw_footer'] = fp['get_only_raw_footer']
-
-    def write_typo_ods_sheet(self, vat_number, typo):
-        content_sheet = get_data(self.referencialSuppplierSpreadsheet)
-        for line in content_sheet['Fournisseur']:
-            if line and line[1] == vat_number:
-                try:
-                    line[8] = typo
-                except IndexError:
-                    line.append(typo)
-        save_data(self.referencialSuppplierSpreadsheet, content_sheet)
-
-    def update_supplier_ods_sheet(self, _db):
-        if os.path.isfile(self.referencialSuppplierSpreadsheet):
-            content_sheet = get_data(self.referencialSuppplierSpreadsheet)
-
-            res = _db.select({
-                'select': ['*'],
-                'table': ['accounts_supplier'],
-                'where': ['status = %s'],
-                'data': ['OK'],
-            })
-
-            try:
-                sheet_name = False
-                for sheet in content_sheet:
-                    sheet_name = sheet
-
-                if sheet_name:
-                    content_sheet[sheet_name] = content_sheet[sheet_name][:1]
-                    for supplier in res:
-                        address_id = supplier['address_id']
-                        address = False
-                        if address_id:
-                            address = _db.select({
-                                'select': ['*'],
-                                'table': ['addresses'],
-                                'where': ['id = %s'],
-                                'data': [address_id],
-                            })[0]
-
-                        positions_mask_id = _db.select({
-                            'select': ['id'],
-                            'table': ['positions_masks'],
-                            'where': ['supplier_id = %s'],
-                            'data': [supplier['id']]
-                        })
-
-                        line = [supplier['name'] if supplier['name'] is not None else '',
-                                supplier['vat_number'] if supplier['vat_number'] is not None else '',
-                                supplier['siret'] if supplier['siret'] is not None else '',
-                                supplier['siren'] if supplier['siren'] is not None else '',
-                                supplier['iban'] if supplier['iban'] is not None else '',
-                                address['address1'] if address and address['address1'] is not None else '',
-                                address['address2'] if address and address['address2'] is not None else '',
-                                address['postal_code'] if address and address['postal_code'] is not None else '',
-                                address['city'] if address and address['city'] is not None else '',
-                                address['country'] if address and address['country'] is not None else '',
-                                positions_mask_id[0]['id'] if positions_mask_id and positions_mask_id[0]['id'] is not None else '',
-                                str(not supplier['get_only_raw_footer']).lower() if supplier['get_only_raw_footer'] is not None else '']
-                        content_sheet[sheet_name].append(line)
-            except IndexError as e:
-                self.log.error("IndexError while updating ods reference file : " + str(e), False)
-
-            save_data(self.referencialSuppplierSpreadsheet, content_sheet)
-        else:
-            self.log.error('The referencial file doesn\'t exist : ' + self.referencialSuppplierSpreadsheet, False)
-
-    def write_typo_excel_sheet(self, vat_number, typo):
-        content_sheet = pd.read_excel(self.referencialSuppplierSpreadsheet, engine='openpyxl')
-        sheet_name = pd.ExcelFile(self.referencialSuppplierSpreadsheet).sheet_names
-        content_sheet = content_sheet.to_dict(orient='records')
-
-        for line in content_sheet:
-            if line[self.referencialSupplierArray['VATNumber']] == vat_number:
-                line[self.referencialSupplierArray['typology']] = typo
-
-        content_sheet = pd.DataFrame(content_sheet)
-        writer = pd.ExcelWriter(self.referencialSuppplierSpreadsheet, engine='xlsxwriter')
-        content_sheet.to_excel(writer, sheet_name=sheet_name[0])
-        writer.save()
-
-    @staticmethod
-    def read_excel_sheet(referencial_spreadsheet):
-        content_sheet = pd.read_excel(referencial_spreadsheet, engine='openpyxl')
-        return content_sheet
+            self.referencial_supplier_array['name'] = fp['name']
+            self.referencial_supplier_array['vat_number'] = fp['vat_number']
+            self.referencial_supplier_array['siret'] = fp['siret']
+            self.referencial_supplier_array['siren'] = fp['siren']
+            self.referencial_supplier_array['duns'] = fp['duns']
+            self.referencial_supplier_array['bic'] = fp['bic']
+            self.referencial_supplier_array['rccm'] = fp['rccm']
+            self.referencial_supplier_array['iban'] = fp['iban']
+            self.referencial_supplier_array['email'] = fp['email']
+            self.referencial_supplier_array['address1'] = fp['address1']
+            self.referencial_supplier_array['address2'] = fp['address2']
+            self.referencial_supplier_array['postal_code'] = fp['postal_code']
+            self.referencial_supplier_array['city'] = fp['city']
+            self.referencial_supplier_array['country'] = fp['country']
+            self.referencial_supplier_array['get_only_raw_footer'] = fp['get_only_raw_footer']
+            self.referencial_supplier_array['lang'] = fp['lang']
+            self.referencial_supplier_array['default_currency'] = fp['default_currency']
 
     @staticmethod
     def read_csv_sheet(referencial_spreadsheet):
-        content_sheet = pd.read_csv(referencial_spreadsheet, sep=";")
-        return content_sheet
+        encoding_list = ['ascii', 'utf-8', 'iso-8859-1', 'cp1252']
 
-    def read_ods_sheet(self, referencial_spreadsheet):
-        content_sheet = get_data(referencial_spreadsheet)
-        if 'Fournisseur' in content_sheet:
-            content_sheet = content_sheet['Fournisseur']
-        content_sheet = pd.DataFrame(content_sheet, columns=[
-            self.referencialSupplierArray['name'],
-            self.referencialSupplierArray['VATNumber'],
-            self.referencialSupplierArray['SIRET'],
-            self.referencialSupplierArray['SIREN'],
-            self.referencialSupplierArray['IBAN'],
-            self.referencialSupplierArray['address1'],
-            self.referencialSupplierArray['address2'],
-            self.referencialSupplierArray['addressPostalCode'],
-            self.referencialSupplierArray['addressTown'],
-            self.referencialSupplierArray['addressCountry'],
-            self.referencialSupplierArray['positions_mask_id'],
-            self.referencialSupplierArray['get_only_raw_footer']
-        ])
-        # Drop row 0 because it contains the indexes columns
-        if not content_sheet.empty:
-            content_sheet = content_sheet.drop(0)
-            # Drop empty rows
-            content_sheet = content_sheet.dropna(axis=0, how='all', thresh=None, subset=None)
-
-        return content_sheet
+        for encoding in encoding_list:
+            try:
+                with open(referencial_spreadsheet, 'r', encoding=encoding) as csvfile:
+                    sep = str(csv.Sniffer().sniff(csvfile.read()).delimiter)
+                    if not sep or sep == ' ':
+                        sep = ';'
+                    content_sheet = pd.read_csv(referencial_spreadsheet, sep=sep, encoding=encoding, on_bad_lines='warn')
+            except UnicodeDecodeError:
+                continue
+            return content_sheet
 
     def construct_supplier_array(self, content_sheet):
-        # Create the first index of array, with provider number (taxe number)
-        tmp_provider_number = pd.DataFrame(content_sheet,
-                                           columns=[self.referencialSupplierArray['VATNumber']]).drop_duplicates()
-        for value in tmp_provider_number.to_dict(orient='records'):
-            self.referencialSupplierData[value[self.referencialSupplierArray['VATNumber']]] = []
-
-        # Then go through the Excel document and fill our final array with all infos about the provider and the bill
         tmp_excel_content = pd.DataFrame(content_sheet)
+        self.referencial_supplier_data = []
         for line in tmp_excel_content.to_dict(orient='records'):
-            if line[self.referencialSupplierArray['positions_mask_id']] == line[self.referencialSupplierArray['positions_mask_id']] and line[self.referencialSupplierArray['positions_mask_id']]:
-                try:
-                    line[self.referencialSupplierArray['positions_mask_id']] = int(line[self.referencialSupplierArray['positions_mask_id']])
-                except ValueError:
-                    line[self.referencialSupplierArray['positions_mask_id']] = line[self.referencialSupplierArray['positions_mask_id']]
-
-            if line[self.referencialSupplierArray['get_only_raw_footer']] == line[self.referencialSupplierArray['get_only_raw_footer']] and line[self.referencialSupplierArray['get_only_raw_footer']]:
-                try:
-                    line[self.referencialSupplierArray['get_only_raw_footer']] = int(line[self.referencialSupplierArray['get_only_raw_footer']])
-                except ValueError:
-                    line[self.referencialSupplierArray['get_only_raw_footer']] = line[self.referencialSupplierArray['get_only_raw_footer']]
-
-            if line[self.referencialSupplierArray['SIRET']] == line[self.referencialSupplierArray['SIRET']] and line[self.referencialSupplierArray['SIRET']]:
-                try:
-                    line[self.referencialSupplierArray['SIRET']] = int(line[self.referencialSupplierArray['SIRET']])
-                except ValueError:
-                    line[self.referencialSupplierArray['SIRET']] = line[self.referencialSupplierArray['SIRET']]
-
-            if line[self.referencialSupplierArray['SIREN']] == line[self.referencialSupplierArray['SIREN']] and line[self.referencialSupplierArray['SIREN']]:
-                try:
-                    line[self.referencialSupplierArray['SIREN']] = int(line[self.referencialSupplierArray['SIREN']])
-                except ValueError:
-                    line[self.referencialSupplierArray['SIREN']] = line[self.referencialSupplierArray['SIREN']]
-
-            if line[self.referencialSupplierArray['addressPostalCode']] == line[self.referencialSupplierArray['addressPostalCode']] and line[self.referencialSupplierArray['addressPostalCode']]:
-                if len(str(line[self.referencialSupplierArray['addressPostalCode']])) == 4:
-                    line[self.referencialSupplierArray['addressPostalCode']] = '0' + str(
-                        line[self.referencialSupplierArray['addressPostalCode']])
-            self.referencialSupplierData[line[self.referencialSupplierArray['VATNumber']]].append(line)
+            if line[self.referencial_supplier_array['postal_code']]:
+                if len(str(line[self.referencial_supplier_array['postal_code']])) == 4:
+                    line[self.referencial_supplier_array['postal_code']] = '0' + str(
+                        line[self.referencial_supplier_array['postal_code']])
+            for t in line:
+                if isinstance(line[t], (float, int)) and line[t] and not math.isnan(line[t]):
+                    line[t] = str(int(line[t]))
+            self.referencial_supplier_data.append(line)

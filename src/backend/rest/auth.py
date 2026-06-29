@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,16 +11,15 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
 
-import psycopg2
 from flask_babel import gettext
-from src.backend.import_controllers import auth
-from src.backend.import_classes import _Config, _Database, _Log
-from flask import Blueprint, request, make_response, current_app
+from src.backend.models import user
+from src.backend.functions import rest_validator
+from src.backend.controllers import auth, privileges
+from flask import Blueprint, request, make_response, jsonify
 
 
 bp = Blueprint('auth', __name__, url_prefix='/ws/')
@@ -27,32 +27,250 @@ bp = Blueprint('auth', __name__, url_prefix='/ws/')
 
 @bp.route('auth/login', methods=['POST'])
 def login():
-    res = check_connection()
-    if res is None:
-        data = request.json
-        res = auth.login(data['username'], data['password'], data['lang'])
-    else:
-        res = [{
-                "errors": gettext('PGSQL_ERROR'),
-                "message": res.replace('\n', '')
-            }, 401]
+    check, message = rest_validator(request.json, [
+        {'id': 'lang', 'type': str, 'mandatory': True},
+        {'id': 'token', 'type': str, 'mandatory': False},
+        {'id': 'username', 'type': str, 'mandatory': False},
+        {'id': 'password', 'type': str, 'mandatory': False}
+    ])
+
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    res = auth.handle_login(request.json)
+
     return make_response(res[0], res[1])
 
 
-def check_connection():
-    config_name = _Config(current_app.config['CONFIG_FILE'])
-    config = _Config(current_app.config['CONFIG_FOLDER'] + '/config_' + config_name.cfg['PROFILE']['id'] + '.ini')
-    db_user = config.cfg['DATABASE']['postgresuser']
-    db_host = config.cfg['DATABASE']['postgreshost']
-    db_port = config.cfg['DATABASE']['postgresport']
-    db_pwd = config.cfg['DATABASE']['postgrespassword']
-    db_name = config.cfg['DATABASE']['postgresdatabase']
-    try:
-        psycopg2.connect(
-            "dbname     =" + db_name +
-            " user      =" + db_user +
-            " password  =" + db_pwd +
-            " host      =" + db_host +
-            " port      =" + db_port)
-    except (psycopg2.OperationalError, psycopg2.ProgrammingError) as e:
-        return str(e).split('\n')[0]
+@bp.route('auth/login/refresh', methods=['POST'])
+@auth.token_required
+def refresh():
+    check, message = rest_validator(request.json, [
+        {'id': 'token', 'type': str, 'mandatory': True}
+    ])
+
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    res = auth.refresh(request.json['token'])
+    return make_response(res[0], res[1])
+
+
+@bp.route('auth/checkToken', methods=['POST'])
+def check_token():
+    check, message = rest_validator(request.json, [
+        {'id': 'token', 'type': str, 'mandatory': True}
+    ])
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    res = auth.check_token(request.json['token'])
+    return make_response(res[0], res[1])
+
+
+@bp.route('auth/generateAuthToken', methods=['POST'])
+@auth.token_required
+def generate_auth_token():
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'configurations', 'generate_auth_token']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/auth/generateAuthToken'}), 403
+
+    check, message = rest_validator(request.json, [
+        {'id': 'token', 'type': str, 'mandatory': False},
+        {'id': 'username', 'type': str, 'mandatory': True},
+        {'id': 'expiration', 'type': int, 'mandatory': True}
+    ])
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    if 'token' in request.json:
+        _, code = auth.check_token(request.json['token'])
+        if code == 200:
+            return make_response({'token': request.json['token']}, 200)
+
+    user_id = user.get_user_by_username({"select": ['users.id'], "username": request.json['username']})
+    if not user_id[0]:
+        return make_response({'errors': gettext('USER_NOT_FOUND'), 'message': 'auth/generateAuthToken'}, 400)
+
+    res = auth.generate_token(user_id[0]['id'], request.json['expiration'])
+    return make_response({'token': res[0]}, res[1])
+
+
+@bp.route('auth/logout', methods=['GET'])
+def logout():
+    check, message = rest_validator(request.args, [
+        {'id': 'user_id', 'type': int, 'mandatory': True}
+    ])
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    user_id = request.args.get('user_id')
+
+    auth.logout(user_id)
+    return {}, 200
+
+
+@bp.route('auth/getEnabledLoginMethod', methods=['GET'])
+def get_enabled_login_method():
+    res = auth.get_enabled_login_method()
+    return make_response(res[0], res[1])
+
+
+@bp.route('auth/retrieveLdapConfigurations', methods=['GET'])
+@auth.token_required
+def retrieve_ldap_configurations():
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'login_methods']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/auth/retrieveLdapConfigurations'}), 403
+
+    res = auth.get_ldap_configurations()
+    return make_response(res[0], res[1])
+
+
+@bp.route('auth/connectionLdap', methods=['POST'])
+@auth.token_required
+def check_connection_ldap_server():
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'login_methods']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/auth/retrieveLdapConfigurations'}), 403
+
+    check, message = rest_validator(request.json, [
+        {'id': 'host', 'type': str, 'mandatory': True},
+        {'id': 'port', 'type': str, 'mandatory': True},
+        {'id': 'typeAD', 'type': str, 'mandatory': True},
+        {'id': 'baseDN', 'type': str, 'mandatory': False},
+        {'id': 'prefix', 'type': str, 'mandatory': False},
+        {'id': 'suffix', 'type': str, 'mandatory': False},
+        {'id': 'loginAdmin', 'type': str, 'mandatory': True},
+        {'id': 'passwordAdmin', 'type': str, 'mandatory': True}
+    ])
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    res = auth.verify_ldap_server_connection(request.json)
+    return make_response(res[0], res[1])
+
+
+@bp.route('auth/ldapSynchronization', methods=['POST'])
+@auth.token_required
+def ldap_synchronization_users():
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'login_methods']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/auth/ldapSynchronization'}), 403
+
+    check, message = rest_validator(request.json, [
+        {'id': 'host', 'type': str, 'mandatory': True},
+        {'id': 'port', 'type': str, 'mandatory': True},
+        {'id': 'typeAD', 'type': str, 'mandatory': True},
+        {'id': 'baseDN', 'type': str, 'mandatory': False},
+        {'id': 'usersDN', 'type': str, 'mandatory': True},
+        {'id': 'prefix', 'type': str, 'mandatory': False},
+        {'id': 'suffix', 'type': str, 'mandatory': False},
+        {'id': 'classUser', 'type': str, 'mandatory': True},
+        {'id': 'loginAdmin', 'type': str, 'mandatory': True},
+        {'id': 'classObject', 'type': str, 'mandatory': True},
+        {'id': 'passwordAdmin', 'type': str, 'mandatory': True},
+        {'id': 'attributLastName', 'type': str, 'mandatory': True},
+        {'id': 'attributFirstName', 'type': str, 'mandatory': True},
+        {'id': 'attributSourceUser', 'type': str, 'mandatory': True},
+        {'id': 'attributRoleDefault', 'type': int, 'mandatory': True}
+    ])
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    res = auth.synchronization_ldap_users(request.json)
+    return make_response(res[0], res[1])
+
+
+@bp.route('auth/saveLoginMethodConfig', methods=['POST'])
+@auth.token_required
+def save_login_method():
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'login_methods']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/auth/saveLoginMethodConfig'}), 403
+
+    check, message = rest_validator(request.json, [
+        {'id': 'host', 'type': str, 'mandatory': True},
+        {'id': 'port', 'type': str, 'mandatory': True},
+        {'id': 'typeAD', 'type': str, 'mandatory': True},
+        {'id': 'baseDN', 'type': str, 'mandatory': False},
+        {'id': 'prefix', 'type': str, 'mandatory': False},
+        {'id': 'usersDN', 'type': str, 'mandatory': True},
+        {'id': 'suffix', 'type': str, 'mandatory': False},
+        {'id': 'classUser', 'type': str, 'mandatory': True},
+        {'id': 'loginAdmin', 'type': str, 'mandatory': True},
+        {'id': 'classObject', 'type': str, 'mandatory': True},
+        {'id': 'passwordAdmin', 'type': str, 'mandatory': True},
+        {'id': 'attributLastName', 'type': str, 'mandatory': True},
+        {'id': 'attributFirstName', 'type': str, 'mandatory': True},
+        {'id': 'attributSourceUser', 'type': str, 'mandatory': True},
+        {'id': 'attributRoleDefault', 'type': int, 'mandatory': True}
+    ])
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    res = auth.update_login_method('ldap', request.json)
+    return make_response(res[0], res[1])
+
+
+@bp.route('auth/retrieveLoginMethodName', methods=['GET'])
+def get_login_methods_name():
+    res = auth.retrieve_login_methods()
+    return make_response(res[0], res[1])
+
+
+@bp.route('auth/disableLoginMethodName', methods=['POST'])
+@auth.token_required
+def disable_login_method():
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'login_methods']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/auth/disableLoginMethodName'}), 403
+
+    check, message = rest_validator(request.json, [
+        {'id': 'method_name', 'type': str, 'mandatory': True}
+    ])
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    res = auth.disable_login_method(request.json['method_name'])
+    return make_response(res[0], res[1])
+
+
+@bp.route('auth/enableLoginMethodName', methods=['POST'])
+@auth.token_required
+def enable_login_method():
+    if not privileges.has_privileges(request.environ['user_id'], ['settings', 'login_methods']):
+        return jsonify({'errors': gettext('UNAUTHORIZED_ROUTE'), 'message': '/auth/enableLoginMethodName'}), 403
+
+    check, message = rest_validator(request.json, [
+        {'id': 'method_name', 'type': str, 'mandatory': True}
+    ])
+    if not check:
+        return make_response({
+            "errors": gettext('BAD_REQUEST'),
+            "message": message
+        }, 400)
+
+    res = auth.enable_login_method(request.json['method_name'])
+    return make_response(res[0], res[1])

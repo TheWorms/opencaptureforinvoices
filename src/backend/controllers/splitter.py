@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -10,50 +11,131 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 
-# You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+# See LICENCE file at the root folder for more details.
 
 # @dev : Oussama Brich <oussama.brich@edissyum.com>
+# @dev : Nathan CHEVAL <nathan.cheval@edissyum.com>
 
-import base64
 import json
-import os.path
+import uuid
+import pypdf
+import base64
 import shutil
+import secrets
+import os.path
 import datetime
-
-import PyPDF4
-import pandas as pd
-from flask import current_app
 from flask_babel import gettext
-import worker_splitter_from_python
-from src.backend.import_models import splitter, doctypes
-from src.backend.import_controllers import forms, outputs
-from src.backend.main import create_classes_from_current_config
-from src.backend.import_classes import _Files, _Splitter, _CMIS, _MaarchWebServices
+from src.backend import splitter_exports
+from src.backend.classes.CMIS import CMIS
+from src.backend.classes.Files import Files
+from src.backend.main_splitter import launch
+from werkzeug.datastructures import FileStorage
+from src.backend.classes.OpenADS import OpenADS
+from src.backend.classes.Splitter import Splitter
+from src.backend.functions import retrieve_custom_from_url
+from src.backend.main import create_classes_from_custom_id
+from flask import current_app, request, g as current_context
+from src.backend.controllers import user, monitoring, attachments as attachments_controller, workflow
+from src.backend.models import splitter, doctypes, accounts, history, workflow, outputs, forms, attachments
 
 
-def handle_uploaded_file(files, input_id):
-    _vars = create_classes_from_current_config()
-    _config = _vars[1]
+def handle_uploaded_file(files, workflow_id, user_id):
+    custom_id = retrieve_custom_from_url(request)
     path = current_app.config['UPLOAD_FOLDER_SPLITTER']
+    tokens = []
+
     for file in files:
-        f = files[file]
-        filename = _Files.save_uploaded_file(f, path)
-        worker_splitter_from_python.main({
-            'file': filename,
-            'config': current_app.config['CONFIG_FILE'],
-            'input_id': input_id
+        _f = files[file]
+        filename = Files.save_uploaded_file(_f, path, False)
+
+        now = datetime.datetime.now()
+        year, month, day = [str('%02d' % now.year), str('%02d' % now.month), str('%02d' % now.day)]
+        hour, minute, second, microsecond = [str('%02d' % now.hour), str('%02d' % now.minute), str('%02d' % now.second), str('%02d' % now.microsecond)]
+        date_batch = year + month + day + '_' + hour + minute + second + microsecond
+        token = date_batch + '_' + secrets.token_hex(32) + '_' + str(uuid.uuid4())
+        tokens.append({'filename': os.path.basename(filename), 'token': token})
+
+        task_id_monitor = monitoring.create_process({
+            'token': token,
+            'status': 'wait',
+            'module': 'splitter',
+            'source': 'interface',
+            'filename': os.path.basename(_f.filename),
+            'workflow_id': workflow_id if workflow_id else None
         })
 
-    return True
+        if task_id_monitor:
+            launch({
+                'file': filename,
+                'user_id': user_id,
+                'custom_id': custom_id,
+                'workflow_id': workflow_id,
+                'ip': request.remote_addr,
+                'user_info': request.environ['user_info'],
+                'task_id_monitor': task_id_monitor[0]['process']
+            })
+        else:
+            return False, 500
+    return tokens, 200
 
 
-def retrieve_metadata():
-    _vars = create_classes_from_current_config()
-    _config = _vars[1]
+def launch_referential_update(form_data):
+    if 'database' in current_context and 'log' in current_context and 'config' in current_context and 'docservers' in current_context:
+        log = current_context.log
+        config = current_context.config
+        database = current_context.database
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        log = _vars[5]
+        config = _vars[1]
+        database = _vars[0]
+        docservers = _vars[9]
 
-    args = {}
-    metadata, error = splitter.retrieve_metadata(args)
+    available_methods = docservers['SPLITTER_METADATA_PATH'] + "/metadata_methods.json"
+    call_on_splitter_view = False
+    try:
+        with open(available_methods, encoding='utf-8') as json_file:
+            available_methods = json.load(json_file)
+            for method in available_methods['methods']:
+                if method['id'] == form_data['metadata_method']:
+                    call_on_splitter_view = method['callOnSplitterView']
+                    args = {
+                        'log': log,
+                        'config': config,
+                        'database': database,
+                        'method_data': method,
+                        'docservers': docservers,
+                        'form_id': form_data['form_id']
+                    }
+                    metadata_load = Splitter.import_method_from_script(docservers['SPLITTER_METADATA_PATH'],
+                                                                        method['script'], method['method'])
+                    metadata_load(args)
+    except (Exception,) as e:
+        response = {
+            'status': False,
+            "errors": gettext('LOAD_METADATA_ERROR'),
+            "message": str(e)
+        }
+        return response, 500
+    return {'OK': True, 'callOnSplitterView': call_on_splitter_view}, 200
+
+
+def retrieve_referential(form_id):
+    form, _ = forms.get_form_by_id({'form_id': form_id})
+    if form['settings']['metadata_method']:
+        res = launch_referential_update({
+            'form_id': form['id'],
+            'metadata_method': form['settings']['metadata_method']
+        })
+        if res[1] != 200:
+            return res
+
+    metadata, _ = splitter.retrieve_metadata({
+        'type': 'referential',
+        'form_id': form['id']
+    })
 
     response = {
         "metadata": metadata
@@ -61,33 +143,82 @@ def retrieve_metadata():
     return response, 200
 
 
-def retrieve_batches(args):
-    _vars = create_classes_from_current_config()
-    _config = _vars[1]
+def retrieve_batches(data):
+    if 'docservers' in current_context:
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        docservers = _vars[9]
 
-    args['select'] = ['*', "to_char(creation_date, 'DD-MM-YYY " + gettext('AT') + " HH24:MI:SS') as batch_date"]
-    args['where'] = []
-    args['data'] = []
+    args = {
+        'user_id': data['userId'],
+        'size': data['size'] if 'size' in data else None,
+        'page': data['page'] if 'page' in data else None,
+        'time': data['time'] if 'time' in data else None,
+        'status': data['status'] if 'status' in data else None,
+        'search': data['search'] if 'search' in data else None,
+        'order': data['order'] if 'order' in data else None,
+        'filter': data['filter'] if 'filter' in data else None,
+        'batch_id': data['batchId'] if 'batchId' in data else None
+    }
+
+    user_customers = user.get_customers_by_user_id(args['user_id'])
+
+    if user_customers[1] != 200:
+        return user_customers[0], user_customers[1]
+    user_customers = user_customers[0]
+
+    user_forms = user.get_forms_by_user_id(args['user_id'])
+    if user_forms[1] != 200:
+        return user_forms[0], user_forms[1]
+    user_forms = user_forms[0]
+
+    args['table'] = ['splitter_batches']
+    args['select'] = ['splitter_batches.*', "to_char(splitter_batches.creation_date, 'DD-MM-YYYY " + gettext('AT') + " HH24:MI:SS') as batch_date"]
+    args['where'] = ['customer_id = ANY(%s)', 'form_id = ANY(%s)']
+    args['data'] = [user_customers, user_forms]
+
+    if 'search' in args and args['search']:
+        args['where'].append("splitter_batches.id = %s OR file_name like %s ")
+        args['data'].append(args['search'])
+        args['data'].append(f"%{args['search']}%")
 
     if 'status' in args and args['status'] is not None:
-        args['where'].append("status = %s")
+        args['where'].append("splitter_batches.status = %s")
         args['data'].append(args['status'])
 
     if 'time' in args and args['time'] is not None:
         if args['time'] in ['today', 'yesterday']:
             args['where'].append(
-                "to_char(creation_date, 'YYYY-MM-DD') = to_char(TIMESTAMP '" + args['time'] + "', 'YYYY-MM-DD')")
+                "to_char(splitter_batches.creation_date, 'YYYY-MM-DD') = to_char(TIMESTAMP '" + args['time'] + "', 'YYYY-MM-DD')")
         else:
-            args['where'].append("to_char(creation_date, 'YYYY-MM-DD') < to_char(TIMESTAMP 'yesterday', 'YYYY-MM-DD')")
+            args['where'].append("to_char(splitter_batches.creation_date, 'YYYY-MM-DD') < to_char(TIMESTAMP 'yesterday', 'YYYY-MM-DD')")
+
+    if 'filter' in args and args['filter']:
+        args['order_by'] = args['filter']
+        if 'order' in args and args['order']:
+            args['order_by'] = [args['filter'] + ' ' + args['order']]
+        else:
+            args['order_by'] = [args['filter'] + ' DESC']
+
     batches, error_batches = splitter.retrieve_batches(args)
     count, error_count = splitter.count_batches(args)
     if not error_batches and not error_count:
         for index, batch in enumerate(batches):
-            batches[index]['form_label'] = forms.get_form_by_id(batch['form_id'])[0]['label']
+            form = forms.get_form_by_id({'form_id': batch['form_id']})
+            batches[index]['form_label'] = form[0]['label'] if 'label' in form[0] else gettext('FORM_UNDEFINED')
+
+            customer = accounts.get_customer_by_id({'customer_id': batch['customer_id']})
+            batches[index]['customer_name'] = customer[0]['name'] if 'name' in customer[0] else gettext('CUSTOMER_UNDEFINED')
+
+            attachments_count = attachments.get_attachments_by_batch_id(batch['id'])
+            batches[index]['attachments_count'] = len(attachments_count) if attachments_count else 0
             try:
-                with open(batches[index]['first_page'], 'rb') as image_file:
+                thumbnail = f"{docservers['SPLITTER_THUMB']}/{batches[index]['batch_folder']}/{batches[index]['thumbnail']}"
+                with open(thumbnail, 'rb') as image_file:
                     encoded_string = base64.b64encode(image_file.read())
-                    batches[index]['image_url'] = encoded_string.decode("utf-8")
+                    batches[index]['thumbnail'] = encoded_string.decode("utf-8")
             except IOError:
                 continue
 
@@ -101,50 +232,222 @@ def retrieve_batches(args):
         "errors": "ERROR",
         "message": error_batches
     }
-    return response, 401
+    return response, 400
 
 
-def change_status(args):
-    res = splitter.change_status(args)
+def download_original_file(batch_id):
+    if 'docservers' in current_context:
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        docservers = _vars[9]
+
+    res = splitter.get_batch_by_id({'id': batch_id})
+    if res[0]:
+        try:
+            batch = res[0]
+            file_path = docservers['SPLITTER_ORIGINAL_DOC'] + "/" + batch['file_path']
+            with open(file_path, 'rb') as pdf_file:
+                encoded_file = base64.b64encode(pdf_file.read()).decode('utf-8')
+            return {'encodedFile': encoded_file, 'filename': batch['file_name']}, 200
+        except (Exception,) as e:
+            response = {
+                "errors": "ERROR",
+                "message": str(e)
+            }
+            return response, 400
+
+    response = {
+        "errors": "ERROR",
+        "message": res[1]
+    }
+    return response, 400
+
+
+def delete_batches(args):
+    for _id in args['ids']:
+        batches = splitter.get_batch_by_id({'id': _id})
+        if len(batches[0]) < 1:
+            response = {
+                "errors": gettext('BATCH_NOT_FOUND'),
+                "message": gettext('BATCH_ID_NOT_FOUND', id=_id)
+            }
+            return response, 401
+
+    args['status'] = 'DEL'
+    res = splitter.update_status(args)
+
+    if res:
+        for batch_id in args['ids']:
+            history.add_history({
+                'module': 'splitter',
+                'ip': request.remote_addr,
+                'submodule': 'delete_batch',
+                'user_info': request.environ['user_info'],
+                'desc': gettext('DELETE_BATCH_SUCCESS', batch_id=batch_id)
+            })
+        return '', 200
+    else:
+        response = {
+            "errors": gettext('UPDATE_STATUS_ERROR'),
+            "message": ''
+        }
+        return response, 400
+
+
+def update_status(args):
+    for _id in args['ids']:
+        batches = splitter.get_batch_by_id({'id': _id})
+        if len(batches[0]) < 1:
+            response = {
+                "errors": gettext('BATCH_NOT_FOUND'),
+                "message": gettext('BATCH_ID_NOT_FOUND', id=_id)
+            }
+            return response, 401
+
+    res = splitter.update_status(args)
+    if res:
+        return '', 200
+    else:
+        response = {
+            "errors": gettext('UPDATE_STATUS_ERROR'),
+            "message": ''
+        }
+        return response, 400
+
+
+def update_customer(args):
+    batches = splitter.get_batch_by_id({'id': args['batch_id']})
+    if len(batches[0]) < 1:
+        response = {
+            "errors": gettext('BATCH_NOT_FOUND'),
+            "message": gettext('BATCH_ID_NOT_FOUND', id=args['batch_id'])
+        }
+        return response, 401
+
+    res = splitter.update_customer(args)
+    if res:
+        return '', 200
+    else:
+        response = {
+            "errors": gettext('UPDATE_CUSTOMER_ERROR'),
+            "message": ''
+        }
+        return response, 400
+
+
+def change_form(args):
+    res = splitter.change_form(args)
 
     if res:
         return res, 200
     else:
-        return res, 401
+        return res, 400
+
+
+def lock_batch(args):
+    res = splitter.lock_batch(args)
+
+    if res:
+        return res, 200
+    else:
+        return res, 400
+
+
+def remove_lock_by_user_id(user_id):
+    _, error = splitter.remove_lock_by_user_id({
+        'set': {
+            'locked': False,
+            'locked_by': None
+        },
+        'where': ['locked_by = %s'],
+        'user_id': user_id
+    })
+
+    if error in [None, '']:
+        return '', 200
+    else:
+        response = {
+            "errors": gettext('REMOVE_LOCK_BY_USER_ID_ERROR'),
+            "message": gettext(error)
+        }
+        return response, 400
+
+
+def remove_lock_by_batch_id(batch_id):
+    _, error = splitter.remove_lock_by_batch_id(batch_id)
+
+    if error in [None, '']:
+        return '', 200
+    else:
+        response = {
+            "errors": gettext('REMOVE_LOCK_BY_USER_ID_ERROR'),
+            "message": gettext(error)
+        }
+        return response, 400
+
+
+def get_page_full_thumbnail(page_id):
+    if 'docservers' in current_context:
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        docservers = _vars[9]
+
+    res, error = splitter.get_page_by_id({'id': page_id})
+    if not res:
+        response = {
+            "errors": "ERROR",
+            "message": gettext(error)
+        }
+        return response, 400
+
+    try:
+        thumb_path = f"{docservers['SPLITTER_BATCHES']}/{res[0]['thumbnail']}"
+        with open(thumb_path, 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+            full_thumbnail = encoded_string.decode("utf-8")
+            return {'fullThumbnail': full_thumbnail}, 200
+    except (Exception,) as e:
+        response = {
+            "errors": "ERROR",
+            "message": str(e)
+        }
+        return response, 400
 
 
 def retrieve_documents(batch_id):
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1]
     res_documents = []
+    if 'docservers' in current_context:
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        docservers = _vars[9]
 
-    args = {
-        'id': batch_id
-    }
-    documents, error = splitter.get_batch_documents(args)
+    documents, _ = splitter.get_batch_documents({'batch_id': batch_id})
     if documents:
         for document in documents:
             document_pages = []
             doctype_key = None
             doctype_label = None
 
-            args = {
-                'id': document['id']
-            }
-            pages, error = splitter.get_documents_pages(args)
+            pages, _ = splitter.get_document_pages({'document_id': document['id']})
             if pages:
-                for page_index, page in enumerate(pages):
-                    with open(pages[page_index]['thumbnail'], 'rb') as image_file:
-                        encoded_string = base64.b64encode(image_file.read())
-                        pages[page_index]['image_url'] = encoded_string.decode("utf-8")
-                        document_pages.append(pages[page_index])
+                for page_index, _ in enumerate(pages):
+                    thumbnail = f"{docservers['SPLITTER_THUMB']}/{pages[page_index]['thumbnail']}"
+                    if os.path.isfile(thumbnail):
+                        with open(thumbnail, 'rb') as image_file:
+                            encoded_string = base64.b64encode(image_file.read())
+                            pages[page_index]['thumbnail'] = encoded_string.decode("utf-8")
+                            document_pages.append(pages[page_index])
 
-            dotypes = doctypes.retrieve_doctypes(
-                {
-                    'where': ['status = %s', 'key = %s'],
-                    'data': ['OK', document['doctype_key']]
-                }
-            )[0]
+            dotypes = doctypes.retrieve_doctypes({
+                'where': ['status = %s', 'key = %s'],
+                'data': ['OK', document['doctype_key']]
+            })[0]
 
             if dotypes and len(dotypes[0]) > 0:
                 doctype_key = dotypes[0]['key'] if dotypes[0]['key'] else None
@@ -157,7 +460,8 @@ def retrieve_documents(batch_id):
                 'id': document['id'],
                 'data': document['data'],
                 'status': document['status'],
-                'split_index': document['split_index']
+                'split_index': document['split_index'],
+                'display_order': document['display_order']
             })
 
     response = {"documents": res_documents}
@@ -166,14 +470,48 @@ def retrieve_documents(batch_id):
 
 
 def create_document(args):
+    if 'database' in current_context:
+        database = current_context.database
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        database = _vars[0]
+
     res = splitter.create_document({
         'data': '{}',
         'status': 'NEW',
         'doctype_key': None,
-        'batch_id': args['batch_id'],
-        'split_index': args['split_index'],
+        'batch_id': args['batchId'],
+        'split_index': args['splitIndex'],
+        'display_order': args['displayOrder']
     })
-    if not res:
+
+    if res:
+        for update_data in args['updatedDocuments']:
+            splitter.update_document({
+                'id': update_data['id'],
+                'display_order': update_data['displayOrder']
+            })
+
+        workflow_id = None
+        workflow_info = workflow.get_workflow_by_id({'workflow_id': args['workflowId']})
+        if workflow_info and workflow_info[0]:
+            workflow_id = workflow_info[0]['workflow_id']
+
+        database.insert({
+            'table': 'history',
+            'columns': {
+                'workflow_id': workflow_id,
+                'history_module': 'splitter',
+                'user_ip': request.remote_addr,
+                'history_submodule': 'create_document',
+                'user_info': request.environ['user_info'],
+                'custom_fields': json.dumps({"splitter_document_id": res}),
+                'user_id': args['userId'] if 'userId' in args and args['userId'] else 0,
+                'history_desc': f"{gettext('DOCUMENT')} n°<strong>{str(res)}</strong> {gettext('CREATED_ON_BATCH')} N°<strong>{str(args['batchId'])}</strong>"
+            }
+        })
+    else:
         response = {
             "errors": gettext('ADD_DOCUMENT_ERROR'),
             "message": ''
@@ -193,416 +531,284 @@ def get_output_parameters(parameters):
     return data
 
 
-def export_maarch(auth_data, file_path, args, batch):
-    _vars = create_classes_from_current_config()
-    host = auth_data['host']
-    login = auth_data['login']
-    password = auth_data['password']
-    if host and login and password:
-        ws = _MaarchWebServices(
-            host,
-            login,
-            password,
-            _vars[5],
-            _vars[1]
-        )
-        if os.path.isfile(file_path):
-            args.update({
-                'fileContent': open(file_path, 'rb').read(),
-                'documentDate': str(pd.to_datetime(batch[0]['creation_date']).date())
-            })
-            priority = ws.retrieve_priority(args['priority'])
-            if priority:
-                delays = priority['priority']['delays']
-                process_limit_date = datetime.date.today() + datetime.timedelta(days=delays)
-                args.update({
-                    'processLimitDate': str(process_limit_date)
-                })
-            args.update({
-                'customFields': {}
-            })
-            res, message = ws.insert_with_args(args)
-            if res:
-                return '', 200
-            else:
-                response = {
-                    "errors": gettext('EXPORT_MAARCH_ERROR'),
-                    "message": message['errors']
-                }
-                return response, 400
-        else:
-            response = {
-                "errors": gettext('EXPORT_MAARCH_ERROR'),
-                "message": ''
-            }
-            return response, 400
+def save_modifications(data):
+    if 'database' in current_context:
+        database = current_context.database
     else:
-        response = {
-            "errors": gettext('MAARCH_WS_INFO_EMPTY'),
-            "message": ''
-        }
-        return response, 400
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        database = _vars[0]
 
-
-def export_pdf(batch, documents, parameters, metadata, pages, now, compress_type):
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1]
-    filename = _cfg.cfg['GLOBAL']['docserverpath'] + '/splitter/original_pdf/' + batch[0]['file_path']
-
-    for index, document in enumerate(documents):
-        """
-            Add PDF file names using masks
-        """
-        mask_args = {
-            'mask': parameters['filename'] if 'filename' in parameters else _Files.get_random_string(10),
-            'separator': parameters['separator'],
-            'extension': parameters['extension']
-        }
-        documents[index]['fileName'] = _Splitter.get_mask_result(document, metadata, now, mask_args)
-    paths = _Files.export_pdf(pages, documents, filename, parameters['folder_out'], compress_type, 1)
-
-    if not paths:
-        response = {
-            "errors": gettext('EXPORT_PDF_ERROR'),
-            "message": paths[1]
-        }
-        return response, 400
-    return {'paths': paths}, 200
-
-
-def export_xml(documents, parameters, metadata, now):
-    mask_args = {
-        'mask': parameters['filename'],
-        'separator': parameters['separator'],
-        'extension': parameters['extension']
-    }
-    file_name = _Splitter.get_mask_result(None, metadata, now, mask_args)
-    res_xml = _Splitter.export_xml(documents, metadata, parameters['folder_out'], file_name, now)
-    if not res_xml[0]:
-        response = {
-            "errors": gettext('EXPORT_XML_ERROR'),
-            "message": res_xml[1]
-        }
-        return response, 400
-    return {'path': res_xml[1]}, 200
-
-
-def save_infos(args):
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1]
-    new_documents = []
-    """
-        Save batch metadata
-    """
     res = splitter.update_batch({
-        'batch_id': args['batch_id'],
-        'batch_metadata': args['batch_metadata'],
+        'batch_id': data['batch_id'],
+        'batch_metadata': data['batch_metadata']
     })[0]
     if not res:
         response = {
             "errors": gettext('UPDATE_BATCH_ERROR'),
             "message": ''
         }
-        return response, 401
+        return response, 400
 
-    for document in args['documents']:
-        """
-            Save user added documents
-        """
-        if document['status'] == 'USERADD':
-            res_splitter_index = splitter.get_next_splitter_index({'batch_id': args['batch_id']})
-            if res_splitter_index[0]:
-                new_document_id = splitter.create_document({
-                    'batch_id': args['batch_id'],
-                    'doctype_key': document['documentTypeKey'],
-                    'split_index': res_splitter_index[0]['split_index'],
-                    'data': json.dumps({'custom_fields': document['metadata']}),
-                    'status': 'NEW',
-                })
-                new_documents.append({
-                    'tmp_id': document['id'],
-                    'id': new_document_id
-                })
-            else:
+    for document in data['documents']:
+        page_display_order = 1
+        if document['displayOrder']:
+            res = splitter.update_document({
+                'id': document['id'].split('-')[-1],
+                'display_order': document['displayOrder']
+            })[0]
+
+            if not res:
                 response = {
-                    "errors": gettext('ADD_DOCUMENT_ERROR'),
+                    "errors": gettext('UPDATE_DOCUMENTS_ERROR'),
                     "message": ''
                 }
-                return response, 401
+                return response, 400
 
-        """
-            Save documents metadata
-        """
         document['id'] = document['id'].split('-')[-1]
         res = splitter.update_document({
-            'document_id': document['id'].split('-')[-1],
-            'doctype_key': document['documentTypeKey'],
-            'document_metadata': document['metadata'],
+            'id': document['id'].split('-')[-1],
+            'doctype_key': document['doctypeKey'] if 'doctypeKey' in document else None,
+            'document_metadata': document['metadata']
         })[0]
         if not res:
             response = {
                 "errors": gettext('UPDATE_DOCUMENT_ERROR'),
                 "message": ''
             }
-            return response, 401
-    """
-        move pages
-    """
-    for movedPage in args['moved_pages']:
-        """ Check if page is added in a new document """
-        if movedPage['isAddInNewDoc']:
-            for new_document_item in new_documents:
-                if new_document_item['tmp_id'] == movedPage['newDocumentId']:
-                    movedPage['newDocumentId'] = new_document_item['id']
+            return response, 400
 
-        res = splitter.update_page({
-            'page_id': movedPage['pageId'],
-            'document_id': movedPage['newDocumentId'],
-        })[0]
-        if not res:
-            response = {
-                "errors": gettext('UPDATE_PAGES_ERROR'),
-                "message": ''
-            }
-            return response, 401
+        """
+            Save pages changes
+        """
+        for page in document['pages']:
+            res = splitter.update_page({
+                'page_id': page['id'],
+                'document_id': document['id'],
+                'rotation':  page['rotation'],
+                'display_order': page_display_order
+            })[0]
+            page_display_order += 1
+            if not res:
+                response = {
+                    "errors": gettext('UPDATE_PAGES_ERROR'),
+                    "message": ''
+                }
+                return response, 400
 
     """
-        Delete documents
+        Deleted documents
     """
-    for deleted_documents_id in args['deleted_documents_ids']:
+    for deleted_documents_id in data['deleted_documents_ids']:
         res = splitter.update_document({
-            'document_id': deleted_documents_id.split('-')[-1],
-            'status': 'DEL',
+            'id': deleted_documents_id.split('-')[-1],
+            'status': 'DEL'
         })[0]
+
+        database.delete({
+            'table': ["history"],
+            'where': ["custom_fields ->> 'splitter_document_id' = %s"],
+            'data': [deleted_documents_id.split('-')[-1]]
+        })
+        database.conn.commit()
+
     if not res:
         response = {
             "errors": gettext('UPDATE_PAGES_ERROR'),
             "message": ''
         }
-        return response, 401
+        return response, 400
+
     """
-        Delete pages
+        Deleted pages
     """
-    for deleted_pages_id in args['deleted_pages_ids']:
+    for deleted_pages_id in data['deleted_pages_ids']:
         res = splitter.update_page({
             'page_id': deleted_pages_id,
-            'status': 'DEL',
+            'status': 'DEL'
         })[0]
         if not res:
             response = {
                 "errors": gettext('UPDATE_PAGES_ERROR'),
                 "message": ''
             }
-            return response, 401
+            return response, 400
+
     return True, 200
 
 
 def test_cmis_connection(args):
     try:
-        _CMIS(args['cmis_ws'], args['login'], args['password'], args['folder'])
-    except Exception as e:
+        cmis = CMIS(args['cmis_ws'], args['login'], args['password'], args['folder'])
+        if cmis.cmis_client.status_code != 200:
+            response = {
+                'status': False,
+                "errors": gettext('CMIS_CONNECTION_ERROR'),
+                "message": cmis.cmis_client.text
+            }
+            return response, 400
+        elif cmis.root_folder != cmis.base_dir:
+            response = {
+                'status': False,
+                "errors": gettext('CMIS_CONNECTION_ERROR'),
+                "message": gettext('CMIS_FOLDER_ERROR_MESSAGE')
+            }
+            return response, 400
+    except (Exception,) as e:
         response = {
             'status': False,
             "errors": gettext('CMIS_CONNECTION_ERROR'),
             "message": str(e)
         }
-        return response, 200
+        return response, 400
     return {'status': True}, 200
 
 
-def validate(args):
-    now = _Files.get_now_date()
-    _vars = create_classes_from_current_config()
-    _cfg = _vars[1]
+def test_openads_connection(args):
+    _openads = OpenADS(args['openads_api'], args['login'], args['password'])
+    res = _openads.test_connection()
+    if not res['status']:
+        response = {
+            'status': False,
+            "errors": gettext('OPENADS_CONNECTION_ERROR'),
+            "message": res['message'] if 'message' in res else ''
+        }
+        return response, 400
+    return {'status': True}, 200
 
-    """
-    Save data before validate
-    """
-    save_response = save_infos({
-        'documents': args['documents'],
-        'batch_id': args['batchMetadata']['id'],
-        'moved_pages': args['movedPages'],
-        'batch_metadata': args['batchMetadata'],
-        'deleted_pages_ids': args['deletedPagesIds'],
-        'deleted_documents_ids': args['deletedDocumentsIds']
+
+def export_batch(data):
+    custom_id = retrieve_custom_from_url(request)
+    if 'regex' in current_context and 'log' in current_context and 'docservers' in current_context:
+        log = current_context.log
+        regex = current_context.regex
+        docservers = current_context.docservers
+        config = current_context.config
+        database = current_context.database
+    else:
+        _vars = create_classes_from_custom_id(custom_id)
+        database = _vars[0]
+        config = _vars[1]
+        regex = _vars[2]
+        log = _vars[5]
+        docservers = _vars[9]
+
+    save_response = save_modifications({
+        'batch_id': data['batchId'],
+        'documents': data['documents'],
+        'moved_pages': data['movedPages'],
+        'batch_metadata': data['batchMetadata'],
+        'deleted_pages_ids': data['deletedPagesIds'],
+        'deleted_documents_ids': data['deletedDocumentsIds']
     })
-
     if save_response[1] != 200:
         return save_response
 
-    batch = splitter.retrieve_batches({
-        'batch_id': None,
-        'page': None,
-        'size': None,
-        'where': ['id = %s'],
-        'data': [args['batchMetadata']['id']]
-    })[0]
-    form = forms.get_form_by_id(batch[0]['form_id'])
-    """
-        Split document
-    """
-    pages = _Splitter.get_split_pages(args['documents'])
-
-    if 'outputs' in form[0]:
-        for output_id in form[0]['outputs']:
-            output = outputs.get_output_by_id(output_id)
-            parameters = get_output_parameters(output[0]['data']['options']['parameters'])
-            if output:
-                """
-                    Export PDF files if required by output
-                """
-                if output[0]['output_type_id'] in ['export_pdf']:
-                    res_export_pdf = export_pdf(batch, args['documents'], parameters, args['batchMetadata'], pages, now, output[0]['compress_type'])
-                    if res_export_pdf[1] != 200:
-                        return res_export_pdf
-                """
-                    Export XML file if required by output
-                """
-                if output[0]['output_type_id'] in ['export_xml']:
-                    res_export_xml = export_xml(args['documents'], parameters, args['batchMetadata'], now)
-                    if res_export_xml[1] != 200:
-                        return res_export_xml
-                """
-                    Export to CMIS
-                """
-                if output[0]['output_type_id'] in ['export_cmis']:
-                    cmis_auth = get_output_parameters(output[0]['data']['options']['auth'])
-                    cmis_params = get_output_parameters(output[0]['data']['options']['parameters'])
-                    cmis = _CMIS(cmis_auth['cmis_ws'],
-                                 cmis_auth['login'],
-                                 cmis_auth['password'],
-                                 cmis_auth['folder'])
-                    """
-                        Export pdf for Alfresco
-                    """
-                    pdf_export_parameters = {
-                        'extension': 'pdf',
-                        'folder_out': _cfg.cfg['GLOBAL']['tmppath'],
-                        'separator': cmis_params['separator'],
-                        'filename': cmis_params['pdf_filename'],
-                    }
-                    res_export_pdf = export_pdf(batch, args['documents'], pdf_export_parameters, args['batchMetadata'], pages, now, output[0]['compress_type'])
-                    if res_export_pdf[1] != 200:
-                        return res_export_pdf
-                    for file_path in res_export_pdf[0]['paths']:
-                        cmis_res = cmis.create_document(file_path, 'application/pdf')
-                        if not cmis_res[0]:
-                            response = {
-                                "errors": gettext('EXPORT_XML_ERROR'),
-                                "message": cmis_res[1]
-                            }
-                            return response, 500
-                    """
-                        Export xml for Alfresco
-                    """
-                    xml_export_parameters = {
-                        'separator': cmis_params['separator'],
-                        'filename': cmis_params['xml_filename'],
-                        'extension': 'xml',
-                        'folder_out': _cfg.cfg['GLOBAL']['tmppath'],
-                    }
-                    res_export_xml = export_xml(args['documents'], xml_export_parameters, args['batchMetadata'], now)
-                    if res_export_xml[1] != 200:
-                        return res_export_xml
-                    cmis_res = cmis.create_document(res_export_xml[0]['path'], 'text/xml')
-                    if not cmis_res[0]:
-                        response = {
-                            "errors": gettext('EXPORT_XML_ERROR'),
-                            "message": cmis_res[1]
-                        }
-                        return response, 500
-                """
-                    Export to Maarch
-                """
-                if output[0]['output_type_id'] in ['export_maarch']:
-                    cmis_params = get_output_parameters(output[0]['data']['options']['parameters'])
-                    maarch_auth = get_output_parameters(output[0]['data']['options']['auth'])
-                    pdf_export_parameters = {
-                        'filename': 'TMP_PDF_EXPORT_TO_MAARCH',
-                        'extension': 'pdf',
-                        'separator': cmis_params['separator'],
-                        'file_name': cmis_params['filename'],
-                    }
-                    res_export_pdf = export_pdf(batch, args['documents'], pdf_export_parameters, args['batchMetadata'], pages, now, output[0]['compress_type'])
-                    if res_export_pdf[1] != 200:
-                        return res_export_pdf
-                    subject_mask = parameters['subject']
-                    for index, file_path in enumerate(res_export_pdf[0]['paths']):
-                        mask_args = {
-                            'mask': subject_mask,
-                            'separator': ' ',
-                            'format': parameters['format']
-                        }
-                        parameters['subject'] = _Splitter.get_mask_result(args['documents'][index], args['batchMetadata'],
-                                                                          now, mask_args)
-                        res_export_maarch = export_maarch(maarch_auth, file_path, parameters, batch)
-                        if res_export_maarch[1] != 200:
-                            return res_export_maarch
-                """
-                    Change status to END
-                """
-                splitter.change_status({
-                    'id': args['batchMetadata']['id'],
-                    'status': 'END'
-                })
-
-    return {"OK": True}, 200
+    export_res = splitter_exports.export_batch(data['batchId'], log, docservers, regex, config, database, custom_id)
+    return export_res
 
 
 def get_split_methods():
-    _vars = create_classes_from_current_config()
-    _config = _vars[1]
-    split_methods = _Splitter.get_split_methods(_config)
+    if 'docservers' in current_context:
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        docservers = _vars[9]
+    split_methods = Splitter.get_split_methods(docservers)
     if len(split_methods) > 0:
         return split_methods, 200
-    return split_methods, 401
+    return split_methods, 400
 
 
-def get_totals(status):
+def get_metadata_methods(form_method=False):
+    if 'docservers' in current_context:
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        docservers = _vars[9]
+
+    metadata_methods = Splitter.get_metadata_methods(docservers, form_method)
+    if metadata_methods and len(metadata_methods) > 0:
+        return metadata_methods, 200
+    return metadata_methods, 400
+
+
+def get_totals(status, user_id):
     totals = {}
-    totals['today'], error = splitter.get_totals({'time': 'today', 'status': status})
-    totals['yesterday'], error = splitter.get_totals({'time': 'yesterday', 'status': status})
-    totals['older'], error = splitter.get_totals({'time': 'older', 'status': status})
+    user_customers = user.get_customers_by_user_id(user_id)
+    if user_customers[1] != 200:
+        return user_customers[0], user_customers[1]
+    user_customers = user_customers[0]
+
+    user_forms = user.get_forms_by_user_id(user_id)
+    if user_forms[1] != 200:
+        return user_forms[0], user_forms[1]
+    user_forms = user_forms[0]
+
+    totals['today'], error = splitter.get_totals({
+        'time': 'today',
+        'status': status,
+        'user_forms': user_forms,
+        'user_customers': user_customers
+    })
+    totals['yesterday'], error = splitter.get_totals({
+        'time': 'yesterday',
+        'status': status,
+        'user_forms': user_forms,
+        'user_customers': user_customers
+    })
+    totals['older'], error = splitter.get_totals({
+        'time': 'older',
+        'status': status,
+        'user_forms': user_forms,
+        'user_customers': user_customers
+    })
 
     if error is None:
         return totals, 200
 
     response = {
         "errors": gettext('GET_TOTALS_ERROR'),
-        "message": error
+        "message": gettext(error)
     }
-    return response, 401
+    return response, 400
 
 
 def merge_batches(parent_id, batches):
-    _vars = create_classes_from_current_config()
-    _db = _vars[0]
-    _config = _vars[1]
+    if 'docservers' in current_context:
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        docservers = _vars[9]
 
     parent_info = splitter.get_batch_by_id({'id': parent_id})[0]
-    parent_filename = _config.cfg['GLOBAL']['docserverpath'] + '/splitter/original_pdf/' + parent_info['file_path']
-    parent_batch_pages = int(parent_info['page_number'])
-    batch_folder = _config.cfg['GLOBAL']['docserverpath'] + '/splitter/batches/' + parent_info['batch_folder']
-    parent_document_id = splitter.get_documents({'id': parent_id})[0][0]['id']
+    parent_filename = docservers['SPLITTER_ORIGINAL_DOC'] + '/' + parent_info['file_path']
+    parent_batch_documents = int(parent_info['documents_count'])
     parent_max_split_index = splitter.get_documents_max_split_index({'id': parent_id})[0][0]['split_index']
-    parent_max_source_page = splitter.get_max_source_page({'id': parent_document_id})[0][0]['source_page']
-
-    parent_pdf = PyPDF4.PdfFileReader(parent_filename)
-    merged_pdf = PyPDF4.PdfFileWriter()
-    for page in range(parent_pdf.numPages):
-        merged_pdf.addPage(parent_pdf.getPage(page))
+    parent_pdf = pypdf.PdfReader(parent_filename)
+    parent_max_source_page = len(parent_pdf.pages)
+    merged_pdf = pypdf.PdfWriter()
+    for page in range(len(parent_pdf.pages)):
+        merged_pdf.add_page(parent_pdf.pages[page])
 
     batches_info = []
-    for batch in batches:
-        batch_info = splitter.get_batch_by_id({'id': batch})[0]
-        parent_batch_pages += batch_info['page_number']
+    childs_attachments = []
+    for batch_id in batches:
+        batch_info = splitter.get_batch_by_id({'id': batch_id})[0]
+        c_attachments = attachments.get_attachments_by_batch_id(batch_id)
+        if c_attachments:
+            for attachment in c_attachments:
+                childs_attachments.append(attachment['id'])
+        parent_batch_documents += batch_info['documents_count']
         batches_info.append(batch_info)
-        pdf = PyPDF4.PdfFileReader(
-            _config.cfg['GLOBAL']['docserverpath'] + '/splitter/original_pdf/' + batch_info['file_path'])
-        for page in range(pdf.numPages):
-            merged_pdf.addPage(pdf.getPage(page))
+        pdf = pypdf.PdfReader(docservers['SPLITTER_ORIGINAL_DOC'] + '/' + batch_info['file_path'])
+        for page in range(len(pdf.pages)):
+            merged_pdf.add_page(pdf.pages[page])
 
-        documents = splitter.get_documents({'id': batch})
+        documents = splitter.get_documents({'id': batch_id})
         cpt = 0
         for doc in documents[0]:
             if doc:
@@ -619,26 +825,116 @@ def merge_batches(parent_id, batches):
                     'split_index': parent_max_split_index + doc['split_index']
                 })
 
-                for page in splitter.get_documents_pages({'id': doc['id']})[0]:
-                    new_path = batch_folder + '/' + os.path.basename(page['thumbnail'])
-                    parent_max_source_page = parent_max_source_page + 1
-                    if not os.path.isfile(new_path):
-                        shutil.copy(page['thumbnail'], new_path)
+                for page in splitter.get_document_pages({'document_id': doc['id']})[0]:
+                    new_source_page = parent_max_source_page + page['source_page']
+                    new_page = parent_info['batch_folder'] + '/' + 'page-' + str(doc['id']) + str(new_source_page).zfill(3) + '.jpg'
+                    new_page_absolute = docservers['SPLITTER_BATCHES'] + '/' + new_page
+                    if not os.path.isfile(new_page_absolute):
+                        shutil.copy(docservers['SPLITTER_BATCHES'] + '/' + page['thumbnail'], new_page_absolute)
+
+                    new_thumb_absolute = docservers['SPLITTER_THUMB'] + '/' + new_page
+                    if not os.path.isfile(new_thumb_absolute):
+                        shutil.copy(docservers['SPLITTER_THUMB'] + '/' + page['thumbnail'], new_thumb_absolute)
 
                     splitter.insert_page({
                         'document_id': document_id,
-                        'path': new_path,
-                        'source_page': parent_max_source_page
+                        'path': new_page,
+                        'source_page': new_source_page
                     })
 
-                splitter.change_status({
-                    'id': batch,
+                splitter.update_status({
+                    'ids': [int(batch_id)],
                     'status': 'MERG'
                 })
 
                 cpt += 1
         parent_max_split_index += 1
 
-    splitter.update_batch_page_number({'id': parent_id, 'number': parent_batch_pages})
+    splitter.update_batch_documents_count({'id': parent_id, 'number': parent_batch_documents})
     with open(parent_filename, 'wb') as file:
         merged_pdf.write(file)
+
+    for attachment_id in childs_attachments:
+        attachments.update_attachment({
+            'attachment_id': attachment_id,
+            'set': {
+                'batch_id': parent_id
+            }
+        })
+
+
+def get_unseen(user_id):
+    user_customers = user.get_customers_by_user_id(user_id)
+    total_unseen = splitter.count_batches({
+        'where': ['status = %s', 'customer_id = ANY(%s)'],
+        'data': ['NEW', user_customers[0]]
+    })[0]
+    return total_unseen, 200
+
+
+def get_batch_outputs(batch_id):
+    _outputs = []
+
+    batch, _ = splitter.get_batch_by_id({'id': batch_id})
+    workflow_settings, error = workflow.get_workflow_by_id({'workflow_id': batch['workflow_id']})
+    if error:
+        response = {
+            "errors": gettext('GET_BATCH_OUTPUTS_ERROR'),
+            "message": gettext(error)
+        }
+        return response, 400
+
+    if workflow_settings['process']['use_interface'] and batch['form_id']:
+        form, error = forms.get_form_by_id({'form_id': batch['form_id']})
+        if error:
+            return error, 400
+        outputs_id = form['outputs']
+    else:
+        outputs_id = workflow_settings['output']['outputs_id']
+
+    for output_id in outputs_id:
+        output, error = outputs.get_output_by_id({'output_id': output_id})
+        if error:
+            return error, 400
+        _outputs.append({
+            'id': output['id'],
+            'type': output['output_type_id'],
+            'label': output['output_label']
+        })
+
+    return {'outputs': _outputs}, 200
+
+def move_documents_to_attachment(documents, batch_id):
+    if 'docservers' in current_context:
+        docservers = current_context.docservers
+    else:
+        custom_id = retrieve_custom_from_url(request)
+        _vars = create_classes_from_custom_id(custom_id)
+        docservers = _vars[9]
+
+    for document in documents:
+        document_id = document['id']
+        pages, _ = splitter.get_document_pages({'document_id': document_id})
+        batch_info, _ = splitter.get_batch_by_id({'id': batch_id})
+
+        file_path = docservers['SPLITTER_ORIGINAL_DOC'] + '/' + batch_info['file_path']
+        pdf_reader = pypdf.PdfReader(file_path, strict=False)
+        pdf_writer = pypdf.PdfWriter()
+
+        for page in pages:
+            pdf_page = pdf_reader.pages[page['source_page'] - 1]
+            if page['rotation'] != 0:
+                pdf_page.rotate(page['rotation'])
+            pdf_writer.add_page(pdf_page)
+
+        tmp_filename = docservers['TMP_PATH'] + '/' + str(uuid.uuid4()) + '.pdf'
+        pdf_writer.write(tmp_filename)
+
+        attachments_controller.handle_uploaded_file({
+            'files': FileStorage(stream=open(tmp_filename, 'rb'), filename=batch_info['file_name'])
+        }, None, batch_id, 'splitter')
+
+        if os.path.isfile(tmp_filename):
+            os.remove(tmp_filename)
+
+    return '', 200

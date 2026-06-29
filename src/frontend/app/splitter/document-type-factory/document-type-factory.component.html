@@ -1,46 +1,100 @@
-<div *ngIf="treeDataObj.loading">
-    <app-loader></app-loader>
-</div>
-<div class="search-input w-full pl-4 pt-4">
+<div class="w-full mx-4 mt-4">
     <mat-form-field class="w-60">
-        <mat-label>{{ 'SPLITTER.search' | translate }}</mat-label>
+        <mat-label>{{ 'SPLITTER.search_folder' | translate }}</mat-label>
         <input matInput [(ngModel)]="searchText" (input)="filterChanged()">
     </mat-form-field>
-    <mat-form-field *ngIf="!data.hasOwnProperty('formId')" class="absolute right-4 w-60">
-        <mat-label>{{ 'FORMS.choose_form' | translate }}</mat-label>
-        <mat-select id='folder' [formControl]="selectFormControl">
-            <div *ngFor="let form of forms">
-                <mat-option [value]="form.id">
-                    {{ form.label | translate }}
-                </mat-option>
-            </div>
-        </mat-select>
-    </mat-form-field>
+    <button class="text-gray-400 ml-4 mx-2 my-4 hover:text-green-400 hover:cursor-pointer" (click)="cleanSearchText()"
+            [matTooltip]="'DOCTYPE.clean_search_text' | translate">
+        <i class="fa-solid fa-eraser text-lg"></i>
+    </button>
+    <button class="text-gray-400 ml-4 mx-2 my-4 hover:text-green-400 hover:cursor-pointer" (click)="collapseAll()"
+            [matTooltip]="'DOCTYPE.minimize_tree' | translate">
+        <i class="fa-solid fa-minimize text-lg"></i>
+    </button>
+    <button class="text-gray-400 mx-2 my-4 hover:text-green-400 hover:cursor-pointer" (click)="expandAll()"
+            [matTooltip]="'DOCTYPE.maximize_tree' | translate">
+        <i class="fa-solid fa-maximize text-lg"></i>
+    </button>
+    @if (this.settings.hasOwnProperty('allowUniqueDocType') || this.settings.allowUniqueDocType) {
+        <mat-slide-toggle class="mx-2 my-4" [formControl]="toggleControl" (click)="changeDocType()" [matTooltip]="'DOCTYPE.unique_doctype_field_explanation' | translate">
+            {{ 'DOCTYPE.unique_doctype' | translate }}
+        </mat-slide-toggle>
+    }
+    @if (!this.settings.hasOwnProperty('formId')) {
+        <mat-form-field class="float-right w-60 mr-8">
+            <mat-label>{{ 'FORMS.choose_form' | translate }}</mat-label>
+            <mat-select id='folder' [formControl]="selectFormControl">
+                @for (form of this.forms; track form['id']) {
+                    <mat-option [value]="form['id']">
+                        <span>{{ form['label'] | translate }}</span>
+                        @if (form['id'] !== selectFormControl.value) {
+                            <button [matTooltip]="'DOCTYPE.clone_doctypes' | translate"
+                                    (click)="$event.stopPropagation(); cloneFormDoctypes(form['id'], selectFormControl.value)"
+                                    class="hover:text-green-400 fa fa-clone absolute right-0 mr-2"></button>
+                        }
+                    </mat-option>
+                }
+            </mat-select>
+        </mat-form-field>
+    }
+
+    @if (!this.settings.hasOwnProperty('allowImportExport') || this.settings.allowImportExport) {
+        <div class="mr-4 my-4 float-right">
+            <button class="text-gray-400 hover:text-green-400 hover:cursor-pointer mx-2"
+                    (click)="importDoctypes()" [matTooltip]="'DOCTYPE.import' | translate">
+                <i class="fa-solid fa-file-import fa-2x"></i>
+            </button>
+            <button class="text-gray-400 hover:text-green-400 hover:cursor-pointer mx-2"
+                    (click)="exportDoctypes()" [matTooltip]="'DOCTYPE.export' | translate">
+                <i class="fa-solid fa-file-export fa-2x"></i>
+            </button>
+        </div>
+    }
 </div>
-<mat-card class="overflow-auto" style="height: calc(100% - 9.5rem) !important;">
-    <div *ngIf="treeDataObj.doctypesData.length === 0"
-         class="text-gray-400">{{ 'DOCTYPE.no_doctype_to_show' | translate }}</div>
-    <mat-tree [dataSource]="dataSource" [treeControl]="treeControl">
-        <mat-tree-node *matTreeNodeDef="let node" matTreeNodePadding>
-            <button mat-button class="h-8" [ngClass]="selectedDocTypeInput.key === node.key ? 'text-green-400' : ''"
-                    (click)="selectNode(node)">
-                <i class="fas fa-file fw"></i>
-                <span class="pl-1 font-normal">
-                <span *ngIf="node.isDefault" class="absolute top-4 right-4" matBadge="0" matBadgeSize="small"
-                      matBadgeOverlap="false"></span>
-                        {{node.label}}
-                </span>
+<mat-card class="overflow-auto mx-4" style="height: calc(100% - 11rem) !important">
+    @if (this.treeDataObj.loading) {
+        <div>
+            <app-loader></app-loader>
+        </div>
+    }
+    @if (this.treeDataObj.doctypeData.length === 0 || dataSource.data.length === 0) {
+        <div class="text-gray-400 p-4">
+            {{ 'DOCTYPE.no_doctype_to_show' | translate }}
+        </div>
+    }
+    <mat-tree [dataSource]="dataSource" [treeControl]="treeControl" class="m-2">
+        <mat-tree-node *matTreeNodeDef="let node" matTreeNodePadding="{{ node.padding }}">
+            <button class="whitespace-nowrap p-1 rounded hover:text-slate-100 hover:bg-green-400 font-normal"
+                    (click)="selectNode(node, false)"
+                    (dblclick)="selectNode(node, true)"
+                    [ngClass]="selectedDoctypeInput.key === node.key ? 'bg-green-400 text-slate-100' : ''">
+                    @if (node.isDefault) {
+                        <i class="fa-solid fa-file-circle-check pr-1"></i>
+                    } @else {
+                        <i class="fa-solid fa-file pr-1"></i>
+                    }
+                    <span>{{ node.label }}</span>
             </button>
         </mat-tree-node>
-        <mat-tree-node *matTreeNodeDef="let node;when: hasChild" matTreeNodePadding>
-            <button mat-button matTreeNodeToggle
-                    [ngClass]="selectedDocTypeInput.key === node.key ? 'text-green-400' : ''"
+        <mat-tree-node *matTreeNodeDef="let node;when: hasChild" matTreeNodePadding="{{ node.padding }}">
+            <button matTreeNodeToggle class="whitespace-nowrap p-1 rounded font-normal hover:bg-green-400 hover:text-slate-100"
+                    [ngClass]="selectedDoctypeInput.key === node.key ? 'bg-green-400 text-slate-100' : ''"
                     [attr.aria-label]="'Toggle ' + node.label"
                     (click)="selectFolder(node)">
-                <i [ngClass]="treeControl.isExpanded(node) ? 'fa fa-minus-square' : 'fa fa-plus-square'">
-                </i>
-                <span class="pl-1 font-normal">{{node.label}}</span>
+                    <i [ngClass]="treeControl.isExpanded(node) ? 'fa fa-minus-square' : 'fa fa-plus-square'"></i>
+                    @if (this.searchText) {
+                        <span [innerHTML]="highlight(node.label)"></span>
+                    } @else {
+                        <span>{{ node.label }}</span>
+                    }
             </button>
+            @if (this.settings.showFoldersSeparatorBtn) {
+                <button mat-button class="p-1 hover:text-green-400"
+                        (click)="selectNode(node, false)"
+                        [matTooltip]="'DOCTYPE.generate_folder_separators' | translate">
+                    <i class="fa-solid fa-folder-closed fa-lg"></i>
+                </button>
+            }
         </mat-tree-node>
     </mat-tree>
 </mat-card>

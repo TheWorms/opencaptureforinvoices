@@ -1,0 +1,99 @@
+@reference "tailwindcss";
+@config "../../../tailwind.config.js";
+
+
+i.cdk-drag {
+    @apply absolute;
+    @apply text-sm;
+    @apply text-red-500;
+    @apply mr-2;
+    @apply mb-1;
+}
+
+.ng-sg-active {
+    @apply bg-green-100;
+    @apply border-green-400;
+    @apply border;
+    @apply rounded-sm;
+}
+
+.ng-sg-placeholder {
+    & mat-form-field {
+        @apply scale-90;
+    }
+    @apply h-14;
+    @apply border;
+    @apply border-green-400;
+    @apply rounded-md;
+    @apply mt-4;
+    @apply pb-1;
+}
+
+.cdk-drag-placeholder {
+    & mat-form-field {
+        @apply hidden;
+    }
+    @apply h-10;
+    @apply pt-[1.125rem];
+    @apply pl-1;
+    @apply border;
+    @apply border-green-400;
+    @apply rounded-sm;
+}
+
+.form-builder {
+    @apply pb-3;
+    @apply pt-3;
+    & .mat-mdc-form-field-flex {
+        @apply h-14;
+        & .mat-mdc-form-field-infix {
+            @apply w-full;
+            & div > button {
+                @apply invisible;
+                @apply opacity-0;
+                @apply transition-all;
+                @apply duration-500;
+                @apply left-8;
+                @apply top-2;
+                &:hover .mat-mdc-button-persistent-ripple::before {
+                    @apply bg-transparent!;
+                }
+            }
+
+            & i {
+                @apply invisible;
+                @apply opacity-0;
+                @apply left-0.5;
+                @apply transition-all;
+                @apply duration-500;
+                @apply top-4;
+            }
+
+            & .input-label {
+                @apply ml-0;
+                @apply transition-all;
+                @apply duration-500;
+            }
+        }
+        .mat-mdc-form-field-infix {
+            &:hover i {
+                @apply visible;
+                @apply opacity-100;
+            }
+        }
+
+        &:hover > .mat-mdc-form-field-infix > div > button {
+            @apply visible;
+            @apply opacity-100;
+            @apply left-0;
+        }
+
+        &:hover > .mat-mdc-form-field-infix > .input-label {
+            @apply pl-12;
+        }
+    }
+}
+
+.mat-mdc-menu-panel {
+    @apply max-w-full!;
+}

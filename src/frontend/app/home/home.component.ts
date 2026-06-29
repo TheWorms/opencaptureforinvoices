@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
-Open-Capture for Invoices is free software: you can redistribute it and/or modify
+Open-Capture is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
@@ -11,35 +11,120 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
 @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
 
-import {Component, OnInit} from '@angular/core';
-import {AuthService} from "../../services/auth.service";
-import {UserService} from "../../services/user.service";
-import {LocalStorageService} from "../../services/local-storage.service";
-import {PrivilegesService} from "../../services/privileges.service";
+import { Component, OnInit } from '@angular/core';
+import { UserService } from "../../services/user.service";
+import { SessionStorageService } from "../../services/session-storage.service";
+import { PrivilegesService } from "../../services/privileges.service";
+import { Router } from "@angular/router";
+import { LastUrlService } from "../../services/last-url.service";
+import { HttpClient } from "@angular/common/http";
+import { environment } from "../env";
+import { catchError, tap } from "rxjs/operators";
+import { of } from "rxjs";
+import { NotificationService } from "../../services/notifications/notifications.service";
+import { AuthService } from "../../services/auth.service";
+
 
 @Component({
     selector: 'app-home',
     templateUrl: './home.component.html',
-    styleUrls: ['./home.component.scss']
+    styleUrls: ['./home.component.scss'],
+    standalone: false
 })
 export class HomeComponent implements OnInit {
+    isOpen = false;
+    unseenBatches : any = {'splitter': 0, 'verifier': 0};
+    fullUnseenBatches : any = {'splitter': {}, 'verifier': {}};
+
     constructor(
+        private router: Router,
+        private http : HttpClient,
         private authService: AuthService,
         private userService: UserService,
+        private notify: NotificationService,
+        private routerExtService: LastUrlService,
         public privilegesService: PrivilegesService,
-        private localeStorageService: LocalStorageService
-    ) {
-    }
+        private sessionStorageService: SessionStorageService
+    ) {}
 
     ngOnInit() {
+        if (!this.authService.headersExists) {
+            this.authService.generateHeaders();
+        }
+
         this.setValue('');
+        const splitter = this.privilegesService.hasPrivilege('access_splitter');
+        const verifier = this.privilegesService.hasPrivilege('access_verifier');
+        const lastUrl = this.routerExtService.getPreviousUrl();
+        this.userService.user   = this.userService.getUserFromLocal();
+        if (lastUrl === '/login') {
+            if (verifier && !splitter) {
+                this.router.navigate(['/verifier/list']).then();
+            } else if (splitter && !verifier) {
+                this.router.navigate(['/splitter/list']).then();
+            } else {
+                this.checkConnection();
+            }
+        } else {
+            this.checkConnection();
+        }
+
+        if (verifier) {
+            this.http.get(environment['url'] + '/ws/verifier/getUnseen/user/' + this.userService.user.id,
+                {headers: this.authService.headers}).pipe(
+                tap((data: any) => {
+                    this.fullUnseenBatches['verifier'] = data.unseen;
+                    data.unseen.forEach((item: any) => {
+                        this.unseenBatches['verifier'] += item['unseen'];
+                    });
+                })
+            ).subscribe();
+        }
+
+        if (splitter) {
+            this.http.get(environment['url'] + '/ws/splitter/getUnseen/user/' + this.userService.user.id,
+                {headers: this.authService.headers}).pipe(
+                tap((data: any) => {
+                    this.unseenBatches['splitter'] = data['unseen'];
+                })
+            ).subscribe();
+        }
+    }
+
+    checkConnection() {
+        if (!this.authService.headersExists) {
+            this.authService.generateHeaders();
+        }
+        const token = this.authService.getToken('tokenJwt');
+        if (token) {
+            this.http.post(environment['url'] + '/ws/auth/checkToken', {'token': token}).pipe(
+                catchError((err: any) => {
+                    console.debug(err);
+                    this.authService.logout();
+                    this.notify.handleErrors(err);
+                    return of(false);
+                })
+            ).subscribe();
+        }
     }
 
     setValue(value: string) {
-        this.localeStorageService.save('splitter_or_verifier', value);
+        this.sessionStorageService.save('splitter_or_verifier', value);
+    }
+
+    getUnseenBatches(module: string) {
+        return this.unseenBatches[module];
+    }
+
+    getUnseenToolTip(module: string) {
+        let message = '';
+        Object.keys(this.fullUnseenBatches[module]).forEach((item: any) => {
+            message += '<strong>' + this.fullUnseenBatches[module][item]['status'] + '</strong> : ' + this.fullUnseenBatches[module][item]['unseen'] + "<br>";
+        })
+        return message;
     }
 }

@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
-Open-Capture for Invoices is free software: you can redistribute it and/or modify
+Open-Capture is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
@@ -11,74 +11,115 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
 @dev : Nathan Cheval <nathan.cheval@outlook.fr> */
 
-import {Component, OnInit} from '@angular/core';
-import {ViewEncapsulation} from '@angular/core';
-import {FormBuilder, FormControl} from "@angular/forms";
-import {FileValidators} from "ngx-file-drag-drop";
-import {API_URL} from "../env";
-import {catchError, finalize, tap} from "rxjs/operators";
-import {of} from "rxjs";
-import {HttpClient, HttpHeaders} from "@angular/common/http";
-import {ActivatedRoute, Router} from "@angular/router";
-import {AuthService} from "../../services/auth.service";
-import {UserService} from "../../services/user.service";
-import {TranslateService} from "@ngx-translate/core";
-import {NotificationService} from "../../services/notifications/notifications.service";
-import {LocalStorageService} from "../../services/local-storage.service";
-import {HistoryService} from "../../services/history.service";
-
+import { Component, OnInit, ViewEncapsulation } from '@angular/core';
+import { FormControl } from "@angular/forms";
+import { FileValidators } from "ngx-file-drag-drop";
+import { environment } from  "../env";
+import {catchError, finalize, map, tap} from "rxjs/operators";
+import {firstValueFrom, of} from "rxjs";
+import { HttpClient, HttpHeaders} from "@angular/common/http";
+import { AuthService } from "../../services/auth.service";
+import { UserService } from "../../services/user.service";
+import { _, TranslateService } from "@ngx-translate/core";
+import { NotificationService } from "../../services/notifications/notifications.service";
+import { SessionStorageService } from "../../services/session-storage.service";
 
 @Component({
     selector: 'app-upload',
     templateUrl: './upload.component.html',
     styleUrls: ['./upload.component.scss'],
     encapsulation: ViewEncapsulation.None,
+    standalone: false
 })
 
 export class UploadComponent implements OnInit {
-    headers                  : HttpHeaders   = this.authService.headers;
-    selectedInput            : any           = '';
-    selectedInputTechnicalId : any           = '';
-    inputs                   : any[]         = [];
-    loading                  : boolean       = true;
-    sending                  : boolean       = false;
+    allowedExtensions           : string[]      = ['pdf', 'jpg', 'jpeg', 'png', 'heif', 'heic'];
+    headers                     : HttpHeaders   = this.authService.headers;
+    selectedWorkflow            : any           = '';
+    selectedWorkflowTechnicalId : any           = '';
+    workflows                   : any           = [];
+    loading                     : boolean       = true;
+    sending                     : boolean       = false;
+    error                       : boolean       = false;
+    timeout                     : number        = 2000;
 
     constructor(
-        private router: Router,
         private http: HttpClient,
-        private route: ActivatedRoute,
         public userService: UserService,
-        private formBuilder: FormBuilder,
         private authService: AuthService,
         public translate: TranslateService,
         private notify: NotificationService,
-        private historyService: HistoryService,
-        public localeStorageService: LocalStorageService
-    ) {
-    }
+        public sessionStorageService: SessionStorageService
+    ) {}
 
     fileControl = new FormControl(
         [],
         [
             FileValidators.required,
-            FileValidators.fileExtension(['pdf'])
+            FileValidators.fileExtension(this.allowedExtensions)
         ]
     );
 
-    ngOnInit(): void {
-        const splitterOrVerifier = this.localeStorageService.get('splitter_or_verifier');
-        this.http.get(API_URL + '/ws/inputs/list?module=' + splitterOrVerifier, {headers: this.authService.headers}).pipe(
-            tap((data: any) => {
-                this.inputs = data.inputs;
-                if (this.inputs.length === 1) {
-                    this.selectedInput = data.inputs[0].id;
-                    this.selectedInputTechnicalId = data.inputs[0].input_id;
+    async ngOnInit(): Promise<void> {
+        if (!this.authService.headersExists) {
+            this.authService.generateHeaders();
+        }
+        if (!this.userService.user.id) {
+            this.userService.user = this.userService.getUserFromLocal();
+        }
+
+        const splitterOrVerifier: any = this.sessionStorageService.get('splitter_or_verifier');
+        if (splitterOrVerifier !== undefined || splitterOrVerifier !== '') {
+            this.getWorkflows(splitterOrVerifier);
+        }
+
+        let resulTimeout = await this.retrieveTimeOut()
+        if (resulTimeout != null) {
+            this.timeout = resulTimeout;
+        }
+    }
+
+    async retrieveTimeOut() {
+        let confTimeout = 'timeoutUpload'
+        return await firstValueFrom( this.http.get(environment['url'] + '/ws/config/getConfigurationNoAuth/' + confTimeout, {headers: this.authService.headers}).pipe(
+            map((data: any) => {
+                if (!data || data.configuration === undefined || data.configuration.length === 0) {
+                    return 2000;
                 }
-             }),
+                return parseInt(data.configuration[0].data.value)
+            }),
+            catchError((err: any) => {
+                console.debug(err);
+                this.notify.handleErrors(err);
+                return of(null)
+            })
+        ));
+    };
+
+    getWorkflows(splitterOrVerifier: string): void {
+        this.http.get(environment['url'] + '/ws/workflows/' + splitterOrVerifier + '/list/user/' + this.userService.user.id, {headers: this.authService.headers}).pipe(
+            tap((data: any) => {
+                data.workflows.forEach((element: any) => {
+                    let show = true;
+
+                    if (element.process && element.process['api_only']) {
+                        show = false
+                    }
+
+                    if (show) {
+                        this.workflows.push(element);
+                    }
+                });
+
+                if (this.workflows.length === 1) {
+                    this.selectedWorkflow = data.workflows[0].id;
+                    this.selectedWorkflowTechnicalId = data.workflows[0].workflow_id;
+                }
+            }),
             finalize(() => {this.loading = false;}),
             catchError((err: any) => {
                 console.debug(err);
@@ -89,67 +130,82 @@ export class UploadComponent implements OnInit {
     }
 
     checkFile(data: any): void {
+        this.error = false;
         if (data && data.length !== 0) {
             for (let i = 0; i < data.length; i++) {
-                const fileName = data[i].name;
-                const fileExtension = fileName.split('.').pop();
-                if (fileExtension.toLowerCase() !== 'pdf') {
-                    this.notify.handleErrors(this.translate.instant('UPLOAD.extension_unauthorized', {count: data.length}));
+                const fileExtension = data[i].name.split('.').pop();
+                if (this.allowedExtensions.indexOf(fileExtension.toLowerCase()) === -1) {
+                    this.error = true;
+                    this.notify.handleErrors(this.translate.instant('UPLOAD.extension_unauthorized'));
                     return;
                 }
             }
         }
     }
 
-    setInput(inputId: any) {
-        this.inputs.forEach((element: any) => {
-            if (element.id === inputId) {
-                this.selectedInputTechnicalId = element.input_id;
+    setWorkflow(workflowId: any) {
+        this.workflows.forEach((element: any) => {
+            if (element.id === workflowId) {
+                this.selectedWorkflowTechnicalId = element.workflow_id;
             }
         });
-        this.selectedInput = inputId;
+        this.selectedWorkflow = workflowId;
     }
 
-    uploadInvoice(): void {
+    uploadFile(): void {
         this.sending = true;
         const formData: FormData = new FormData();
-
-        if (this.fileControl.value.length === 0) {
+        if (this.fileControl.value!.length === 0) {
             this.notify.handleErrors(this.translate.instant('UPLOAD.no_file'));
             return;
         }
 
-        for (let i = 0; i < this.fileControl.value.length; i++) {
+        let timeout = this.timeout;
+        for (let i = 0; i < this.fileControl.value!.length; i++) {
             if (this.fileControl.status === 'VALID') {
-                formData.append(this.fileControl.value[i].name, this.fileControl.value[i]);
+                if (timeout) {
+                    timeout += this.fileControl.value![i]['size'] / 200;
+                }
+                formData.append(this.fileControl.value![i]['name'], this.fileControl.value![i]);
             } else {
                 this.notify.handleErrors(this.translate.instant('UPLOAD.extension_unauthorized'));
                 return;
             }
         }
-        const splitterOrVerifier = this.localeStorageService.get('splitter_or_verifier');
+
+        formData.set('userId', this.userService.user.id);
+        formData.set('workflowId', this.selectedWorkflowTechnicalId);
+
+        const splitterOrVerifier = this.sessionStorageService.get('splitter_or_verifier');
         if (splitterOrVerifier !== undefined || splitterOrVerifier !== '') {
+            let headersTimeout = timeout == 0 ? {} : {headers: new HttpHeaders({ timeout: `${timeout}`})}
             this.http.post(
-                API_URL + '/ws/' + splitterOrVerifier + '/upload?inputId=' + this.selectedInputTechnicalId,
-                formData,
-                {
-                    headers: this.authService.headers
-                },
+                environment['url'] + '/ws/checkFileBeforeUpload', formData, headersTimeout
             ).pipe(
                 tap(() => {
-                    this.fileControl.setValue('');
-                    this.notify.success(this.translate.instant('UPLOAD.upload_success'));
-                    this.sending = false;
-                    this.historyService.addHistory(splitterOrVerifier, 'upload_file', this.translate.instant('HISTORY-DESC.file_uploaded', {input: this.selectedInputTechnicalId}));
+                    this.http.post(environment['url'] + '/ws/' + splitterOrVerifier + '/upload', formData, {headers: this.authService.headers}).pipe(
+                        tap(() => {
+                            this.sending = false;
+                            this.fileControl.setValue([]);
+                            this.notify.success(this.translate.instant('UPLOAD.upload_success'));
+                        }),
+                        catchError((err: any) => {
+                            this.sending = false;
+                            this.fileControl.setValue([]);
+                            this.notify.handleErrors(err);
+                            return of(false);
+                        })
+                    ).subscribe();
                 }),
-                catchError((err: any) => {
-                    this.notify.handleErrors(err);
+                catchError(() => {
+                    this.sending = false;
+                    this.fileControl.setValue([]);
+                    this.notify.handleErrors(this.translate.instant('ERROR.permission_problem'));
                     return of(false);
                 })
             ).subscribe();
-        }else{
+        } else {
             this.notify.handleErrors(this.translate.instant('ERROR.unknow_error'));
-            return;
         }
     }
 }

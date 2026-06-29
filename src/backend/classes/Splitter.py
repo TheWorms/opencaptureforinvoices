@@ -1,6 +1,7 @@
-# This file is part of Open-Capture for Invoices.
+# This file is part of Open-Capture.
+# Copyright Edissyum Consulting since 2020 under licence GPLv3
 
-# Open-Capture for Invoices is free software: you can redistribute it and/or modify
+# Open-Capture is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
@@ -11,28 +12,117 @@
 # GNU General Public License for more details.
 
 # You should have received a copy of the GNU General Public License
-# along with Open-Capture for Invoices.  If not, see <https://www.gnu.org/licenses/>.
+# along with Open-Capture.  If not, see <https://www.gnu.org/licenses/>.
 
+# @dev : Oussama Bich <oussama.brich@edissyum.com>
 # @dev : Nathan Cheval <nathan.cheval@outlook.fr>
-import json
+
+import re
 import os
+import sys
+import json
+import pypdf
+import base64
 import random
+import hashlib
+import pathlib
+import tempfile
 from xml.dom import minidom
-import xml.etree.cElementTree as ET
-from src.backend.classes.Files import Files
+from datetime import datetime
+from unidecode import unidecode
+from werkzeug.datastructures import FileStorage
+from src.backend.classes.OpenCaptureForMEMWebServices import OpenCaptureForMEMWebServices
+
+
+def construct_with_var(data, document_info):
+    _data = []
+    for column in data.split('#'):
+        if column in document_info:
+            _data.append(str(document_info[column]))
+        else:
+            _data.append(column)
+    return _data
+
+
+def get_value_from_mask(document, metadata, mask_args):
+    if 'export_date' not in metadata:
+        metadata['export_date'] = datetime.now()
+    year = str(metadata['export_date'].year)
+    day = str('%02d' % metadata['export_date'].day)
+    month = str('%02d' % metadata['export_date'].month)
+    hour = str('%02d' % metadata['export_date'].hour)
+    minute = str('%02d' % metadata['export_date'].minute)
+    seconds = str('%02d' % metadata['export_date'].second)
+    _date = year + month + day + hour + minute + seconds
+
+    mask_result = []
+    random_num = str(random.randint(0, 99999)).zfill(5)
+    mask_keys = mask_args['mask'].split('#')
+    separator = mask_args['separator'] if mask_args['separator'] else ''
+    substitute = mask_args['substitute'] if 'substitute' in mask_args else separator
+
+    for key in mask_keys:
+        if not key:
+            continue
+        """
+            PDF or XML masks value
+        """
+        if key in metadata:
+            mask_result.append(str(metadata[key]).replace(' ', substitute))
+        elif key == 'date':
+            mask_result.append(_date.replace(' ', substitute))
+        elif key == 'random':
+            mask_result.append(random_num.replace(' ', substitute))
+        elif key == 'id' and 'id' in metadata:
+            mask_result.append(metadata['id'])
+        elif document:
+            """
+                PDF masks value
+            """
+            if key in document['data']['custom_fields']:
+                value = str(document['data']['custom_fields'][key] if document['data']['custom_fields'][key] else '')
+                value = value.replace(' ', substitute)
+                mask_result.append(value)
+            elif key in metadata:
+                value = str(metadata[key] if metadata[key] else '').replace(' ', substitute)
+                mask_result.append(value)
+            elif key == 'doctype':
+                mask_result.append(document['doctype_key'].replace(' ', substitute))
+            elif key == 'document_identifier':
+                mask_result.append(document['id'])
+            elif key == 'document_index':
+                mask_result.append(document['id'])
+            else:
+                """
+                    PDF value when mask value not found in metadata
+                """
+                mask_result.append(key.replace(' ', substitute))
+        else:
+            """
+                XML value when mask value not found in metadata
+            """
+            mask_result.append(key.replace(' ', substitute))
+
+    mask_result = separator.join(str(x) for x in mask_result)
+    mask_result = unidecode(mask_result)
+    mask_result = mask_result.rstrip(separator)
+    if 'extension' in mask_args:
+        mask_result += '.{}'.format(mask_args['extension'])
+
+    return mask_result
 
 
 class Splitter:
-    def __init__(self, config, database, locale, separator_qr, log):
+    def __init__(self, config, database, separator_qr, log, docservers):
         self.log = log
         self.db = database
         self.qr_pages = []
         self.config = config
-        self.locale = locale
+        self.docservers = docservers
         self.result_batches = []
         self.separator_qr = separator_qr
-        self.doc_start = self.config.cfg['SPLITTER']['docstart']
-        self.bundle_start = self.config.cfg['SPLITTER']['bundlestart']
+        self.doc_start = self.config['SPLITTER']['docstart']
+        self.bundle_start = self.config['SPLITTER']['bundlestart']
 
     def get_result_documents(self, blank_pages):
         split_document = 1
@@ -49,244 +139,470 @@ class Splitter:
                     self.result_batches.append([])
                 split_document = 1
                 is_previous_code_qr = True
-
             elif page['separator_type'] == self.doc_start:
                 if len(self.result_batches[-1]) != 0:
                     split_document += 1
                 is_previous_code_qr = True
-
+                if 'add_page' in page and page['add_page']:
+                    self.result_batches[-1].append({
+                        'path': page['path'],
+                        'mem_value': page['mem_value'],
+                        'metadata_1': page['metadata_1'],
+                        'metadata_2': page['metadata_2'],
+                        'metadata_3': page['metadata_3'],
+                        'split_document': split_document,
+                        'source_page': page['source_page'],
+                        'doctype_value': page['doctype_value']
+                    })
             else:
                 self.result_batches[-1].append({
-                    'source_page': page['source_page'],
-                    'doctype_value': page['doctype_value'],
-                    'maarch_value': page['maarch_value'],
+                    'path': page['path'],
+                    'mem_value': page['mem_value'],
                     'metadata_1': page['metadata_1'],
                     'metadata_2': page['metadata_2'],
                     'metadata_3': page['metadata_3'],
                     'split_document': split_document,
-                    'path': page['path']
+                    'source_page': page['source_page'],
+                    'doctype_value': page['doctype_value']
                 })
                 is_previous_code_qr = False
 
-    def save_documents(self, batch_folder, file, input_id, original_filename):
-        docserver = self.config.cfg['GLOBAL']['docserverpath'] + '/splitter/original_pdf/'
-        for index, batch in enumerate(self.result_batches):
-            batch_name = os.path.basename(os.path.normpath(batch_folder))
-            input_settings = self.db.select({
+    def get_default_values(self, form_id, user_id):
+        user = None
+        default_values = {
+            'batch': {},
+            'document': {}
+        }
+
+        fields = self.db.select({
+            'select': ['*'],
+            'table': ['form_models_field'],
+            'where': ['form_id = %s'],
+            'data': [form_id]
+        })[0]
+
+        if user_id:
+            user = self.db.select({
                 'select': ['*'],
-                'table': ['inputs'],
-                'where': ['input_id = %s', 'module = %s'],
-                'data': [input_id, 'splitter'],
+                'table': ['users'],
+                'where': ['id = %s'],
+                'data': [user_id]
+            })[0]
+
+        data = {
+            'username': user['username'],
+            'email': user['email'] if user['email'] else '',
+            'lastname': user['lastname'] if user['lastname'] else '',
+            'firstname': user['firstname'] if user['firstname'] else ''
+        }
+
+        for field in fields['fields']['batch_metadata']:
+            if 'defaultValue' in field:
+                mask = {
+                    'mask': field['defaultValue'],
+                    'separator': ' '
+                }
+                default_values['batch'][field['label_short']] = get_value_from_mask(None, data, mask)
+
+        for field in fields['fields']['document_metadata']:
+            if 'defaultValue' in field:
+                mask = {
+                    'mask': field['defaultValue'],
+                    'separator': ' '
+                }
+                default_values['document'][field['label_short']] = get_value_from_mask(None, data, mask)
+
+        return default_values
+
+    def create_batches(self, upload_args, file, original_filename):
+        batches_id = []
+        for _, batch_pages in enumerate(self.result_batches):
+            workflow_settings = self.db.select({
+                'select': ['id', 'input, process'],
+                'table': ['workflows'],
+                'where': ['workflow_id = %s', 'module = %s'],
+                'data': [upload_args['workflow_id'], 'splitter']
             })
+
+            clean_path = re.sub(r"/+", "/", file)
+            clean_ds = re.sub(r"/+", "/", self.docservers['SPLITTER_ORIGINAL_DOC'])
+
+            default_values = {
+                'document': {},
+                'batch': {}
+            }
+            form_id = None
+            if (workflow_settings[0]['process']['use_interface'] and 'form_id' in workflow_settings[0]['process'] and
+                    workflow_settings[0]['process']['form_id']):
+                form_id = workflow_settings[0]['process']['form_id']
+                if upload_args['user_id']:
+                    default_values = self.get_default_values(form_id, upload_args['user_id'])
+
+            custom_fields = self.db.select({
+                'select': ['*'],
+                'table': ['custom_fields'],
+                'where': ['module = %s', 'status <> %s'],
+                'data': ['splitter', 'DEL']
+            })
+
+            if batch_pages:
+                first_page = batch_pages[0]
+                if first_page['metadata_1'] or first_page['metadata_2'] or first_page['metadata_3']:
+                    for custom_field in custom_fields:
+                        if first_page['metadata_1'] and custom_field['metadata_key'] == 'SEPARATOR_META1':
+                            default_values['batch'][custom_field['label_short']] = first_page['metadata_1']
+                        if first_page['metadata_2'] and custom_field['metadata_key'] == 'SEPARATOR_META2':
+                            default_values['batch'][custom_field['label_short']] = first_page['metadata_2']
+                        if first_page['metadata_3'] and custom_field['metadata_key'] == 'SEPARATOR_META3':
+                            default_values['batch'][custom_field['label_short']] = first_page['metadata_3']
+
+            with open(clean_path, 'rb') as _f:
+                md5 = hashlib.md5( _f.read()).hexdigest()
 
             args = {
                 'table': 'splitter_batches',
                 'columns': {
-                    'file_path': file.replace(docserver, ''),
+                    'md5': md5,
+                    'form_id': form_id,
+                    'batch_folder': upload_args['batch_folder'],
+                    'subject': upload_args['msg']['subject'][:254] if 'msg' in upload_args and upload_args['msg'] else '',
+                    'workflow_id': workflow_settings[0]['id'],
+                    'file_path': clean_path.replace(clean_ds, ''),
+                    'thumbnail': os.path.basename(batch_pages[0]['path']),
                     'file_name': os.path.basename(original_filename),
-                    'batch_folder': batch_name,
-                    'first_page': batch[0]['path'],
-                    'page_number': str(max((node['split_document'] for node in batch))),
-                    'form_id': str(input_settings[0]['default_form_id'])
+                    'data': json.dumps({'custom_fields': default_values['batch']}),
+                    'customer_id': str(workflow_settings[0]['input']['customer_id']),
+                    'documents_count': str(max((node['split_document'] for node in batch_pages)))
                 }
             }
-
             batch_id = self.db.insert(args)
-            documents_id = 0
+
+            if upload_args['attachments']:
+                from src.backend.controllers import attachments
+                attachments.handle_uploaded_file(upload_args['attachments'], None, batch_id, 'splitter', True)
+
+            batches_id.append(batch_id)
+
+            document_id = 0
+            page_display_order = 1
             previous_split_document = 0
-            for page in batch:
+            for page in batch_pages:
+                custom_fields_data = {}
                 if page['split_document'] != previous_split_document:
-                    documents_data = {'custom_fields': {}}
+                    for custom_field in custom_fields:
+                        if page['metadata_1'] and custom_field['metadata_key'] == 'SEPARATOR_META1':
+                            custom_fields_data[custom_field['label_short']] = page['metadata_1']
+                        if page['metadata_2'] and custom_field['metadata_key'] == 'SEPARATOR_META2':
+                            custom_fields_data[custom_field['label_short']] = page['metadata_2']
+                        if page['metadata_3'] and custom_field['metadata_key'] == 'SEPARATOR_META3':
+                            custom_fields_data[custom_field['label_short']] = page['metadata_3']
                     args = {
                         'table': 'splitter_documents',
                         'columns': {
                             'batch_id': str(batch_id),
                             'split_index': page['split_document'],
-                            'data': '{}',
+                            'display_order': page['split_document']
                         }
                     }
+
                     """
-                        Open-Capture separator
+                        Doctype from Open-Capture separator, AI or default value
                     """
                     if page['doctype_value']:
                         args['columns']['doctype_key'] = page['doctype_value']
+                    elif workflow_settings[0]['input']['ai_model_id']:
+                        model_id = workflow_settings[0]['input']['ai_model_id']
+                        ai_model = self.db.select({
+                            'select': ['id', 'min_proba', 'model_path', 'documents', 'module'],
+                            'table': ['ai_models'],
+                            'where': ['id = %s'],
+                            'data': [model_id]
+                        })
+                        if ai_model:
+                            result, _ = upload_args['artificial_intelligence'].predict_from_file_path(
+                                file, ai_model[0], page=int(page['source_page']))
+                            if result[2] >= ai_model[0]['min_proba']:
+                                args['columns']['doctype_key'] = page['doctype_value'] = result[3]
                     else:
                         default_doctype = self.db.select({
                             'select': ['*'],
                             'table': ['doctypes'],
                             'where': ['status <> %s', 'form_id = %s', 'is_default = %s'],
-                            'data': ['DEL', input_settings[0]['default_form_id'], 'true'],
+                            'data': ['DEL', workflow_settings[0]['process']['form_id'], 'true']
                         })
                         if default_doctype:
                             args['columns']['doctype_key'] = default_doctype[0]['key']
-                    if page['metadata_1'] or page['metadata_2'] or page['metadata_3']:
-                        custom_fields = self.db.select({
-                            'select': ['*'],
-                            'table': ['custom_fields'],
-                            'where': ['module = %s', 'status <> %s'],
-                            'data': ['splitter', 'DEL'],
-                        })
-                        for custom_field in custom_fields:
-                            if page['metadata_1'] and custom_field['metadata_key'] == 'SEPARATOR_META1':
-                                documents_data['custom_fields'][custom_field['label_short']] = page['metadata_1']
-                            if page['metadata_2'] and custom_field['metadata_key'] == 'SEPARATOR_META2':
-                                documents_data['custom_fields'][custom_field['label_short']] = page['metadata_2']
-                            if page['metadata_3'] and custom_field['metadata_key'] == 'SEPARATOR_META3':
-                                documents_data['custom_fields'][custom_field['label_short']] = page['metadata_3']
-                    args['columns']['data'] = json.dumps(documents_data)
+
                     """
-                        Maarch entity separator
+                        MEM Courrier entity separator
                     """
-                    if page['maarch_value']:
-                        entity = page['maarch_value']
+                    if page['mem_value']:
+                        entity = page['mem_value']
                         if len(entity.split('_')) == 2:
                             entity = entity.split('_')[1]
-                        documents_data = {}
-                        custom_fields = self.db.select({
-                            'select': ['*'],
-                            'table': ['custom_fields'],
-                            'where': ['metadata_key = %s', 'status <> %s'],
-                            'data': ['SEPARATOR_MAARCH', 'DEL'],
-                        })
-                        documents_data['custom_fields'] = {}
+
                         for custom_field in custom_fields:
-                            documents_data['custom_fields'][custom_field['label_short']] = entity
-                            args['columns']['data'] = json.dumps(documents_data)
-                    documents_id = self.db.insert(args)
+                            if custom_field['metadata_key'] == 'SEPARATOR_MEM':
+                                custom_fields_data[custom_field['label_short']] = entity
+
+                    if custom_fields:
+                        args['columns']['data'] = json.dumps({'custom_fields': custom_fields_data})
+                    document_id = self.db.insert(args)
+                    page_display_order = 1
 
                 previous_split_document = page['split_document']
-                image = Files.open_image_return(page['path'])
+                paths_elements = pathlib.Path(page['path'])
+                thumbnail = os.path.join(*paths_elements.parts[-2:])
+                rotation = workflow_settings[0]['process']['rotation']
                 args = {
                     'table': 'splitter_pages',
                     'columns': {
-                        'document_id': str(documents_id),
-                        'thumbnail': page['path'],
+                        'thumbnail': thumbnail,
+                        'document_id': str(document_id),
                         'source_page': page['source_page'],
+                        'display_order': str(page_display_order),
+                        'rotation': rotation if rotation != 'no_rotation' else 0
                     }
                 }
                 self.db.insert(args)
-                image.save(page['path'], 'JPEG')
+                page_display_order += 1
+
+            if not workflow_settings[0]['process']['use_interface']:
+                from src.backend.splitter_exports import export_batch
+                export_batch(batch_id, self.log, self.docservers, upload_args['regex'], self.config, self.db, upload_args['custom_id'])
+
             self.db.conn.commit()
-
-        return {'OK': True}
+        return {'batches_id': batches_id}
 
     @staticmethod
-    def get_split_pages(documents):
-        pages = []
+    def get_documents_pages(documents):
+        documents_pages = []
         for document in documents:
-            pages.append([])
+            documents_pages.append([])
             for page in document['pages']:
-                pages[-1].append(page['sourcePage'])
-        return pages
+                documents_pages[-1].append({
+                    'page_id': page['id'],
+                    'rotation': page['rotation'],
+                    'source_page': page['sourcePage']
+                })
+        return documents_pages
+
 
     @staticmethod
-    def get_mask_result(document, metadata, now_date, mask_args):
-        mask_result = []
-        year = str(now_date.year)
-        day = str('%02d' % now_date.day)
-        month = str('%02d' % now_date.month)
-        hour = str('%02d' % now_date.hour)
-        minute = str('%02d' % now_date.minute)
-        seconds = str('%02d' % now_date.second)
-        _date = year + month + day + hour + minute + seconds
-        random_num = str(random.randint(0, 99999)).zfill(5)
-        mask_values = mask_args['mask'].split('#')
-        separator = mask_args['separator'] if mask_args['separator'] else ''
-        for mask_value in mask_values:
-            if not mask_value:
-                continue
-            """
-                PDF or XML masks value
-            """
-            if mask_value in metadata:
-                mask_result.append(metadata[mask_value].replace(' ', separator))
-            elif mask_value == 'date':
-                mask_result.append(_date.replace(' ', separator))
-            elif mask_value == 'random':
-                mask_result.append(random_num.replace(' ', separator))
-            elif document:
-                """
-                    PDF masks value
-                """
-                if document:
-                    if mask_value in document['metadata']:
-                        mask_result.append((document['metadata'][mask_value] if document['metadata'][mask_value] else '')
-                                           .replace(' ', separator))
-                    elif mask_value == 'doctype':
-                        mask_result.append(document['documentTypeKey'].replace(' ', separator))
-                else:
-                    """
-                        PDF value when mask value not found in metadata
-                    """
-                    mask_result.append(mask_value.replace(' ', separator))
-            else:
-                """
-                    XML value when mask value not found in metadata
-                """
-                mask_result.append(mask_value.replace(' ', separator))
+    def export_opencaptureformem(batch, output, docservers, log):
+        host = ''
+        custom_id = ''
+        secret_key = ''
+        for key in output['data']['options']['auth']:
+            if key['id'] == 'host':
+                host = key['value']
+            if key['id'] == 'secret_key':
+                secret_key = key['value']
+            if key['id'] == 'custom_id':
+                custom_id = key['value']
 
-        mask_result = separator.join(str(x) for x in mask_result)
-        if 'extension' in mask_args:
-            mask_result += '.{}'.format(mask_args['extension'])
-        return mask_result
+        _ws = OpenCaptureForMEMWebServices(host, secret_key, custom_id, log)
+        if _ws.access_token[0]:
+            files = []
+            for document in batch['documents']:
+                data_to_send = {
+                    'process': output['parameters']['process'],
+                    'pdf_filename': output['parameters']['pdf_filename'],
+                    'separator': output['parameters']['separator'],
+                    'rdff': output['parameters']['rdff'],
+                    'destination': output['parameters']['destination'],
+                    'custom_fields': {}
+                }
+                if 'custom_fields' in output['parameters'] and output['parameters']['custom_fields']:
+                    if isinstance(output['parameters']['custom_fields'], str):
+                        data_to_send['custom_fields'] = json.loads(output['parameters']['custom_fields'])
+
+                    for key in data_to_send['custom_fields']:
+                        marks_args = {
+                            'mask': data_to_send['custom_fields'][key],
+                            'separator': ''
+                        }
+                        custom_field_value = get_value_from_mask(None, document['data']['custom_fields'], marks_args)
+                        data_to_send['custom_fields'][key] = custom_field_value
+
+                mask_args = {
+                    'mask': data_to_send['pdf_filename'],
+                    'separator': data_to_send['separator'],
+                    'extension': 'pdf'
+                }
+                metadata_file = get_value_from_mask(None, document['data']['custom_fields'], mask_args)
+                pdf_writer = pypdf.PdfWriter()
+                with tempfile.NamedTemporaryFile() as tf:
+                    pdf_reader = pypdf.PdfReader(docservers['SPLITTER_ORIGINAL_DOC'] + '/' + batch['file_path'])
+                    for page in document['pages']:
+                        pdf_page = pdf_reader.pages[page['source_page'] - 1]
+                        if page['rotation'] != 0:
+                            pdf_page.rotate(page['rotation'])
+                        pdf_writer.add_page(pdf_page)
+                    pdf_writer.write(tf.name)
+                    files.append({
+                        'file_content': base64.b64encode(open(tf.name, 'rb').read()).decode('utf-8'),
+                        'file_name': metadata_file
+                    })
+                    res = _ws.send_documents(files, data_to_send)
+            return res
 
     @staticmethod
-    def export_xml(documents, metadata, output_dir, filename, now):
-        year = str(now.year)
-        month = str(now.month).zfill(2)
-        day = str(now.day).zfill(2)
-        hour = str(now.hour).zfill(2)
-        minute = str(now.minute).zfill(2)
-        second = str(now.second).zfill(2)
+    def export_xml(documents, metadata, parameters, regex):
+        year = str(metadata['export_date'].year)
+        month = str(metadata['export_date'].month).zfill(2)
+        day = str(metadata['export_date'].day).zfill(2)
+        hour = str(metadata['export_date'].hour).zfill(2)
+        minute = str(metadata['export_date'].minute).zfill(2)
+        second = str(metadata['export_date'].second).zfill(2)
+        date = f"{day}-{month}-{year} {hour}:{minute}:{second}"
 
-        root = ET.Element("OPENCAPTURESPLITTER")
-        bundle_tag = ET.SubElement(root, "BUNDLE")
-        ET.SubElement(bundle_tag, "BUNDLEINDEX").text = "1"
-        ET.SubElement(bundle_tag, "FILENAME").text = filename
-        ET.SubElement(bundle_tag,
-                      "DATE").text = day + "-" + month + "-" + year + " " + hour + ":" + minute + ":" + second
-        ET.SubElement(bundle_tag, "BUNDLE_NUMBER").text = filename.split('.')[0]
-        ET.SubElement(bundle_tag, "NBDOC").text = str(len(documents))
-        ET.SubElement(bundle_tag, "USER_ID_OC").text = metadata['userName']
-        ET.SubElement(bundle_tag, "USER_NAME_OC").text = metadata['userLastName']
-        ET.SubElement(bundle_tag, "USER_SURNAME_OC").text = metadata['userFirstName']
+        user_lastname = metadata['custom_fields']['userLastName'] if 'userLastName' in metadata['custom_fields'] else ''
+        user_firstname = metadata['custom_fields']['userFirstName'] if 'userFirstName' in metadata['custom_fields'] else ''
 
-        header_tag = ET.SubElement(root, "HEADER")
+        xml_as_string = parameters['xml_template']
+        doc_loop_item_template = re.search(regex['splitter_doc_loop'], xml_as_string, re.DOTALL)
+
+        xml_as_string = xml_as_string.replace('#date#', date)
+        xml_as_string = xml_as_string.replace('#user_lastname#', user_lastname)
+        xml_as_string = xml_as_string.replace('#user_firstname#', user_firstname)
+        xml_as_string = xml_as_string.replace('#documents_count#', str(len(documents)))
+        xml_as_string = xml_as_string.replace('#metadata_file#', metadata['metadata_file'])
+        xml_as_string = xml_as_string.replace('#random#', str(random.randint(0, 99999)).zfill(5))
+        xml_as_string = xml_as_string.replace('#pdf_output_compress_file#', metadata['pdf_output_compress_file'])
+
         """
-            Add batch metadata ignoring search values
+            Add batch metadata
         """
-        for key in metadata:
-            if 'search_' not in key:
-                ET.SubElement(header_tag, key.replace(' ', '')).text = str(metadata[key])
+        for key in metadata['custom_fields']:
+            if f'#{key}#' in xml_as_string:
+                xml_as_string = xml_as_string.replace(f'#{key}#', str(metadata['custom_fields'][key]))
 
-        documents_tag = ET.SubElement(root, "Documents")
-        for index, document in enumerate(documents):
-            document_tag = ET.SubElement(documents_tag, "Document")
-            file_tag = ET.SubElement(document_tag, "File")
-            ET.SubElement(file_tag, "FILEINDEX").text = str(index + 1)
-            ET.SubElement(file_tag, "FILENAME").text = document['fileName'] if 'fileName' in document else ''
-            ET.SubElement(file_tag, "FORMAT").text = "PDF"
+        """
+            Apply if conditions
+        """
+        conditions_template = re.findall(regex['splitter_condition'], xml_as_string, re.DOTALL)
+        for condition in conditions_template:
+            condition_var = re.sub('[{}]', '', condition[0])
+            if condition_var not in metadata or not metadata[condition_var]:
+                xml_as_string = xml_as_string.replace(condition[1], '')
 
-            fields_tag = ET.SubElement(document_tag, "FIELDS")
-            ET.SubElement(fields_tag, "DOCTYPE").text = document['documentTypeKey']
-            for key in document['metadata']:
-                """
-                    Add document metadata ignoring search values
-                """
-                if 'search_' not in key:
-                    ET.SubElement(fields_tag, key.replace(' ', '')).text = str(document['metadata'][key])
-        xml_file_path = output_dir + filename
+        """
+            Add documents metadata
+        """
+        documents_tags = ""
+        if doc_loop_item_template:
+            for _, document in enumerate(documents):
+                if 'is_file_added_to_zip' in document and document['is_file_added_to_zip']:
+                    continue
+
+                document_md5 = ''
+                if 'export_path' in document and os.path.isfile(document['export_path']):
+                    with open(document['export_path'], 'rb') as f:
+                        document_md5 = hashlib.md5(f.read()).hexdigest()
+
+                doc_loop_item = doc_loop_item_template.group(1)
+                doc_loop_item = doc_loop_item.replace('#date#', date)
+                doc_loop_item = doc_loop_item.replace('#user_lastname#', user_lastname)
+                doc_loop_item = doc_loop_item.replace('#user_lastname#', user_lastname)
+                doc_loop_item = doc_loop_item.replace('#documents_count#', str(len(documents)))
+                doc_loop_item = doc_loop_item.replace('#doctype#', str(document['doctype_key']))
+                doc_loop_item = doc_loop_item.replace('#document_identifier#', str(document['id']))
+                doc_loop_item = doc_loop_item.replace('#document_md5#', str(document_md5))
+                doc_loop_item = doc_loop_item.replace('#random#', str(random.randint(0, 99999)).zfill(5))
+                doc_loop_item = doc_loop_item.replace('#filename#', document['filename'] if 'filename' in document else '')
+
+                for key in document['data']['custom_fields']:
+                    if f'#{key}#' in xml_as_string:
+                        doc_loop_item = doc_loop_item.replace(f'#{key}#', str(document['data']['custom_fields'][key]))
+
+                documents_tags += doc_loop_item
+
+            xml_as_string = xml_as_string.replace(doc_loop_item_template.group(1), documents_tags)
+
+        xml_file_path = f"{parameters['folder_out']}/{metadata['metadata_file']}"
+
+        """
+            Check XML Syntax and write file result & remove template comments
+        """
+        xml_as_string = re.sub(regex['splitter_xml_comment'], '', xml_as_string)
+        xml_as_string = re.sub(regex['splitter_empty_line'], '', xml_as_string)
+
         try:
-            xml_str = minidom.parseString(ET.tostring(root)).toprettyxml(indent="    ")
-            with open(xml_file_path, "w", encoding="utf-8") as f:
-                f.write(xml_str)
-        except Exception as e:
+            with open(xml_file_path, "w", encoding='utf-8') as f:
+                minidom.parseString(xml_as_string)
+                f.write(xml_as_string)
+        except (Exception,) as e:
             return False, str(e)
 
         return True, xml_file_path
 
     @staticmethod
-    def get_split_methods(config):
-        with open(config.cfg['SPLITTER']['methodspath'] + '/splitter_methods.json', encoding="UTF-8") as methods_json:
+    def export_verifier(batch, metadata, parameters, docservers, regex):
+        parameters['body_template'] = re.sub(regex['splitter_xml_comment'], '', parameters['body_template'])
+        json_body = json.loads(parameters['body_template'])
+        json_body['files'] = []
+
+        if isinstance(json_body['datas'], str):
+            json_body['datas'] = ''.join(construct_with_var(json_body['datas'], metadata['custom_fields']))
+        elif isinstance(json_body['datas'], dict):
+            for sub_key in json_body['datas']:
+                json_body['datas'][sub_key] = ''.join(construct_with_var(json_body['datas'][sub_key],
+                                                                         metadata['custom_fields']))
+        for document in batch['documents']:
+            for key in json_body['datas']:
+                if json_body['datas'][key] == 'doctype':
+                    json_body['datas'][key] = document['doctype_key']
+
+            pdf_writer = pypdf.PdfWriter()
+            with tempfile.NamedTemporaryFile() as tf:
+                pdf_reader = pypdf.PdfReader(docservers['SPLITTER_ORIGINAL_DOC'] + '/' + batch['file_path'])
+                for page in document['pages']:
+                    pdf_page = pdf_reader.pages[page['source_page'] - 1]
+                    if page['rotation'] != 0:
+                        pdf_page.rotate(page['rotation'])
+                    pdf_writer.add_page(pdf_page)
+                pdf_writer.write(tf.name)
+                file = FileStorage(stream=open(tf.name, 'rb'), content_type='application/pdf',
+                                   filename=document['doctype_key'] + '_' + str(document['id']) + '.pdf')
+                json_body['files'].append(file)
+
+        json_body['splitter_batch_id'] = batch['id']
+        from src.backend.controllers import verifier
+        return verifier.upload_documents(json_body)
+
+    @staticmethod
+    def get_split_methods(docservers):
+        with open(docservers['SPLITTER_METHODS_PATH'] + '/splitter_methods.json', encoding="utf-8") as methods_json:
             methods = json.load(methods_json)
             return methods['methods']
+
+    @staticmethod
+    def get_metadata_methods(docservers, method_id):
+        res_methods = []
+        if os.path.isfile(docservers['SPLITTER_METADATA_PATH'] + '/metadata_methods.json'):
+            with open(docservers['SPLITTER_METADATA_PATH'] + '/metadata_methods.json', encoding="utf-8") as methods_json:
+                methods = json.load(methods_json)
+                for method in methods['methods']:
+                    res_methods.append({
+                        'id': method['id'],
+                        'label': method['label'],
+                        'callOnSplitterView': method['callOnSplitterView']
+                    })
+                if method_id:
+                    res_methods = [method for method in res_methods if method['id'] == method_id]
+                return res_methods
+        return None
+
+    @staticmethod
+    def import_method_from_script(script_path, script_name, method):
+        """
+        Import an attribute, function or class from a module.
+        :param script_path: path to script to launch
+        :param script_name: script name to launch
+        :param method: method name to call
+        """
+        sys.path.append(script_path)
+        script = script_name.replace('.py', '')
+        module = __import__(script, fromlist=method)
+        return getattr(module, method)

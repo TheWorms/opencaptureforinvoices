@@ -1,6 +1,6 @@
-/** This file is part of Open-Capture for Invoices.
+/** This file is part of Open-Capture.
 
- Open-Capture for Invoices is free software: you can redistribute it and/or modify
+ Open-Capture is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
  the Free Software Foundation, either version 3 of the License, or
  (at your option) any later version.
@@ -11,31 +11,30 @@
  GNU General Public License for more details.
 
  You should have received a copy of the GNU General Public License
- along with Open-Capture for Invoices. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
+ along with Open-Capture. If not, see <https://www.gnu.org/licenses/gpl-3.0.html>.
 
  @dev : Oussama Brich <oussama.brich@edissyum.com> */
 
-import {Component, Inject, OnInit} from '@angular/core';
+import { Component, Inject } from '@angular/core';
 import { Router } from "@angular/router";
-import {MAT_DIALOG_DATA} from "@angular/material/dialog";
+import { MAT_DIALOG_DATA, MatDialogRef } from "@angular/material/dialog";
 
 @Component({
     selector: 'app-document-type',
     templateUrl: './document-type.component.html',
-    styleUrls: ['./document-type.component.scss']
+    standalone: false
 })
-export class DocumentTypeComponent implements OnInit {
-    selectedItem:any;
+export class DocumentTypeComponent {
     constructor(
         public router: Router,
+        private dialogRef: MatDialogRef<DocumentTypeComponent>,
         @Inject(MAT_DIALOG_DATA) public data: any
-    ) {
-    }
-
-    ngOnInit(): void {
-    }
+    ) {}
 
     getOutPut($event: any) {
-        this.selectedItem = $event;
+        this.data.selectedDoctype = $event;
+        if (this.data.selectedDoctype.isDblClick) {
+            this.dialogRef.close(this.data.selectedDoctype);
+        }
     }
 }

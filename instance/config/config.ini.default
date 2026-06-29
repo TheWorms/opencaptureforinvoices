@@ -1,0 +1,40 @@
+[GLOBAL]
+applicationUrl   =
+applicationPath  = §§OC_PATH§§/
+configMail       = §§OC_PATH§§/custom/§§CUSTOM_ID§§/config/mail.ini
+watcherConfig    = §§OC_PATH§§/instance/config/watcher.ini
+logFile          = §§OC_PATH§§/custom/§§CUSTOM_ID§§/data/log/OpenCapture.log
+; True or False
+allowWFScripting = False
+
+[SPLITTER]
+docstart         = DOCSTART
+bundlestart      = BUNDLESTART
+
+[DATABASE]
+postgresHost     = localhost
+postgresPort     = 5432
+postgresDatabase = opencapture_edissyum
+postgresUser     =
+postgresPassword =
+
+[REFERENCIAL]
+; CSV only supported
+; Path is set up in docservers table (REFERENTIALS_PATH)
+referencialSupplierDocument = default_referencial_supplier.csv
+referencialSupplierIndex    = default_referencial_supplier_index.json
+
+[SEPARATORQR]
+; True or False
+enabled         = False
+exportpdfa      = False
+; _ or - for exemple
+divider         = _
+
+[API]
+siret-consumer  =
+siret-secret    =
+siret-url-token = https://api.insee.fr/token
+siret-url       = https://api.insee.fr/entreprises/sirene/V3/siret/
+siren-url       = https://api.insee.fr/entreprises/sirene/V3/siren/
+tva-url         = https://ec.europa.eu/taxation_customs/vies/checkVatService.wsdl

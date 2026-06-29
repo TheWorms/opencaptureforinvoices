@@ -1,0 +1,89 @@
+@reference "tailwindcss";
+@config "../../../../tailwind.config.js";
+@config "../../../../tailwind.config.js";
+
+.settings-menu-nav {
+    @apply flex;
+    @apply w-1/75;
+    @apply h-full;
+    @apply flex-col;
+    @apply border-r;
+    @apply xl:w-1/4;
+    @apply 2xl:w-1/6;
+    @apply border-green-400;
+}
+
+.settings_search {
+    @apply -my-2;
+}
+
+.settings_header {
+    @apply z-30;
+    @apply px-2;
+    @apply flex;
+    @apply py-1.5;
+    @apply relative;
+    @apply items-center;
+    @apply text-gray-900;
+    @apply bg-green-400/60;
+    @apply justify-between;
+    & div button i {
+        @apply leading-none!;
+    }
+}
+
+.mat-drawer-inner-container {
+    @apply overflow-x-hidden!;
+    @apply overflow-y-auto!;
+}
+
+.mat-button-wrapper {
+    @apply w-full;
+}
+
+mat-expansion-panel {
+    @apply rounded-none!;
+}
+
+.settings_expansion {
+    @apply border-t;
+    @apply border-white;
+    @apply z-30;
+    @apply bg-gray-100;
+
+    & .mat-content mat-panel-title {
+        @apply text-gray-900!;
+        @apply truncate!;
+    }
+
+    &:hover, &:focus {
+        @apply bg-none!;
+        @apply bg-gray-200!;
+    }
+}
+
+.noActions {
+    &:hover {
+        background: rgba(0,0,0,.04);
+    }
+}
+
+.settings_admin_active {
+    @apply relative;
+    @apply text-green-400;
+}
+
+.settings_admin_active::before {
+    @apply w-1;
+    @apply left-0;
+    @apply h-full;
+    @apply absolute;
+    @apply bg-green-400;
+    @apply content-[''];
+    @apply duration-300;
+    @apply transition-all;
+}
+
+.settings_admin_active:hover::before {
+    @apply w-1.5;
+}
